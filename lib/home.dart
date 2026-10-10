@@ -61,6 +61,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     Native.onNotification = _onNotif;
     Native.onShared = _onShared;
     Native.onFired = _onFired;
+    appErrors.addListener(_onAppError);
+    Native.lastCrash().then((t) {
+      if (t == null || t.trim().isEmpty || !mounted) return;
+      _say('Vibe closed unexpectedly last time. Long-press this message to copy it and send it for a fix:\n\n$t',
+          error: true, local: true);
+    });
     Native.onNet = (v) {
       if (!mounted || v == _online) return;
       setState(() => _online = v);
@@ -102,6 +108,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
 
   @override
   void dispose() {
+    appErrors.removeListener(_onAppError);
     prefs.removeListener(_prefsChanged);
     WidgetsBinding.instance.removeObserver(this);
     _dc.dispose();
@@ -219,6 +226,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
       await Future.delayed(const Duration(milliseconds: 250));
       await _doLocal(r);
     }
+  }
+
+  void _onAppError() {
+    final e = appErrors.value;
+    if (e == null || !mounted) return;
+    appErrors.value = null;
+    Future.microtask(() {
+      if (mounted) _say('Something went wrong (Vibe kept running). Long-press to copy it for a fix:\n\n$e', error: true, local: true);
+    });
   }
 
   void _say(String text,
@@ -2140,8 +2156,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
 
   Widget _hlText(VC c, String text, String q, TextStyle style) {
     final low = text.toLowerCase(), ql = q.toLowerCase();
-    final i = ql.isEmpty ? -1 : low.indexOf(ql);
-    if (i < 0) return Text(text, maxLines: 1, overflow: TextOverflow.ellipsis, style: style);
+    final i = ql.isEmpty || low.length != text.length ? -1 : low.indexOf(ql);
+    if (i < 0 || i + q.length > text.length) return Text(text, maxLines: 1, overflow: TextOverflow.ellipsis, style: style);
     return Text.rich(
       TextSpan(style: style, children: [
         TextSpan(text: text.substring(0, i)),
@@ -2662,6 +2678,18 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
         behavior: HitTestBehavior.opaque,
         onTap: () => _doTalk(m.card ?? const {}, m.pkg!),
         onLongPress: app == null ? null : () => showAppMenu(context, app, () => _launch(app)),
+        child: row,
+      );
+    } else if (m.text.isNotEmpty && m.img == null) {
+      // Any other message: long-press copies its text
+      row = GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onLongPress: () {
+          prefs.heavy();
+          Clipboard.setData(ClipboardData(text: m.text));
+          ScaffoldMessenger.maybeOf(context)
+              ?.showSnackBar(const SnackBar(content: Text('Copied'), duration: Duration(seconds: 1)));
+        },
         child: row,
       );
     }

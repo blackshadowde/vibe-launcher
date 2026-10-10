@@ -49,6 +49,15 @@ class Native {
 
   static Future<bool> online() async => await _c.invokeMethod<bool>('online') ?? true;
 
+  /// Why Vibe closed last time, if it crashed (read once, then forgotten).
+  static Future<String?> lastCrash() async {
+    try {
+      return await _c.invokeMethod<String>('lastCrash');
+    } catch (_) {
+      return null;
+    }
+  }
+
   // Icon packs
   static Future<List<Map>> iconPacks() async => await _c.invokeListMethod<Map>('iconPacks') ?? [];
 
@@ -406,4 +415,14 @@ String ago(int? ms) {
   if (d.inDays < 1) return 'Opened ${d.inHours}h ago';
   if (d.inDays < 7) return 'Opened ${d.inDays}d ago';
   return 'Opened ${(d.inDays / 7).floor()}w ago';
+}
+
+/// Errors caught while Vibe keeps running; the home screen shows them in chat so they can be reported.
+final appErrors = ValueNotifier<String?>(null);
+final _seenErrors = <String>{};
+void noteError(Object e, StackTrace? st) {
+  final first = '$e'.split('\n').first;
+  if (first.length > 300 || !_seenErrors.add(first)) return;
+  final where = '$st'.split('\n').where((l) => l.contains('package:vibe_launcher')).take(3).join('\n');
+  appErrors.value = '$first${where.isEmpty ? '' : '\n$where'}';
 }
