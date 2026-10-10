@@ -466,6 +466,22 @@ class Gemini {
     }
   }
 
+  /// Reads an OpenAI-style answer: text plus any app actions it asked for.
+  static GeminiResult _readChat(Map j, String via) {
+    final m = ((j['choices'] as List).first as Map)['message'] as Map? ?? {};
+    final calls = <Call>[];
+    for (final tc in (m['tool_calls'] as List? ?? [])) {
+      final f = (tc is Map ? tc['function'] : null) as Map?;
+      if (f == null) continue;
+      Map<String, dynamic> args = {};
+      try {
+        args = Map<String, dynamic>.from(jsonDecode('${f['arguments'] ?? '{}'}') as Map);
+      } catch (_) {}
+      calls.add((name: '${f['name']}', args: args));
+    }
+    return GeminiResult(text: '${m['content'] ?? ''}'.trim(), calls: calls, via: via);
+  }
+
   /// Chat models on your Groq account, for the picker.
   static Future<List<String>?> listGroqModels() async {
     final client = HttpClient()..connectionTimeout = const Duration(seconds: 15);
