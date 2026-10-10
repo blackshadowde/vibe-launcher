@@ -1,7 +1,7 @@
 name: vibe_launcher
 description: A Discord-style Android launcher. Apps are users, notifications are messages.
 publish_to: 'none'
-version: 0.8.0+8
+version: 0.9.0+9
 
 environment:
   sdk: '>=3.4.0 <4.0.0'
@@ -13,3 +13,14 @@ dependencies:
 
 flutter:
   uses-material-design: true
+  fonts:
+    - family: GGSans
+      fonts:
+        - asset: assets/fonts/GGSans-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/GGSans-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/GGSans-Semibold.ttf
+          weight: 600
+        - asset: assets/fonts/GGSans-Bold.ttf
+          weight: 700
