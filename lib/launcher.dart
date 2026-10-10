@@ -17,11 +17,13 @@ class Native {
   static const _c = MethodChannel('vibe/launcher');
   static VoidCallback? onHomePressed;
   static void Function(Map)? onNotification;
+  static void Function(Map)? onShared;
 
   static void init() {
     _c.setMethodCallHandler((call) async {
       if (call.method == 'homePressed') onHomePressed?.call();
       if (call.method == 'notif' && call.arguments is Map) onNotification?.call(call.arguments as Map);
+      if (call.method == 'shared' && call.arguments is Map) onShared?.call(call.arguments as Map);
     });
   }
 
@@ -32,6 +34,9 @@ class Native {
       await _c.invokeMethod<bool>('replyNotif', {'key': key, 'text': text}) ?? false;
   static Future<bool> mediaControl(String? pkg, String action) async =>
       await _c.invokeMethod<bool>('mediaControl', {'package': pkg, 'action': action}) ?? false;
+  static Future<Map?> takeShared() => _c.invokeMapMethod('takeShared');
+  static Future<String> filesDir() async => await _c.invokeMethod<String>('filesDir') ?? '';
+
   // People
   static Future<Map> peoplePerms() async => await _c.invokeMapMethod('peoplePerms') ?? {};
   static Future<Map> requestPeople() async => await _c.invokeMapMethod('requestPeople') ?? {};

@@ -24,6 +24,7 @@ class Msg {
   final bool media; // music update from a player app
   /// Rich card under a Vibe reply: {type: contact|sms|calls, ...}
   final Map? card;
+  final String? img; // picture you sent (path on the phone)
 
   Msg(this.me, this.text,
       {int? ts,
@@ -39,7 +40,8 @@ class Msg {
       this.quoteName,
       this.quotePkg,
       this.media = false,
-      this.card})
+      this.card,
+      this.img})
       : ts = ts ?? DateTime.now().millisecondsSinceEpoch;
 
   bool get isNotif => pkg != null;
@@ -62,6 +64,7 @@ class Msg {
         if (quotePkg != null) 'qp': quotePkg,
         if (media) 'md': true,
         if (card != null) 'x': card,
+        if (img != null) 'i': img,
       };
   static Msg fromJson(Map j) => Msg(j['m'] == true, j['t'] ?? '',
       ts: j['s'] ?? 0,
@@ -77,7 +80,8 @@ class Msg {
       quoteName: j['qn'],
       quotePkg: j['qp'],
       media: j['md'] == true,
-      card: j['x'] is Map ? Map.from(j['x']) : null);
+      card: j['x'] is Map ? Map.from(j['x']) : null,
+      img: j['i']);
 }
 
 /// Chat history, kept on the phone (last 500 lines).
@@ -150,6 +154,7 @@ class Brain {
       '• "pause", "play", "next", "previous" for music\n'
       '• "call mom", "message Ravi I\'ll be late", "whatsapp Priya hi", "who called me?"\n'
       '• "remember my brother is Ravi", "what do you remember", "forget …"\n'
+      '• Tap + for Camera or Photos and ask about a picture, or share anything to Vibe from any app\n'
       '• Long-press my avatar for your recent apps\n'
       'Notifications show up here: tap Reply to answer, long-press to mute an app.\n'
       'With a Gemini key (launcher settings) you can also just talk to me: ask questions, '

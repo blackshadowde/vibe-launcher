@@ -1,4 +1,6 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:flutter/services.dart';
 import 'chat.dart';
 import 'gemini.dart';
@@ -29,6 +31,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
   bool _isDefault = true;
   bool _loaded = false;
   bool _thinking = false;
+  String? _attachImg; // picture waiting to be sent
+  String? _attachText; // text or link shared from another app
   /// Messages already on screen when Vibe opened (or already animated): no entrance for them.
   final Set<String> _known = {};
   bool _firstPaint = true;
@@ -43,6 +47,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     WidgetsBinding.instance.addObserver(this);
     Native.onHomePressed = _goHome;
     Native.onNotification = _onNotif;
+    Native.onShared = _onShared;
+    Native.takeShared().then((s) {
+      if (s != null) _onShared(s);
+    });
     chat.load();
     _known.addAll(chat.msgs.map(_idOf));
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -126,9 +134,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
 
   Future<void> _send(String raw) async {
     final text = raw.trim();
-    if (text.isEmpty) return;
+    if (text.isEmpty && _attachImg == null && _attachText == null) return;
     _input.clear();
     prefs.tap();
+    if (_attachImg != null || _attachText != null) {
+      await _sendAttachment(text);
+      return;
+    }
     if (_replyTo != null) {
       await _sendReply(_replyTo!, text);
       return;
@@ -220,12 +232,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
   }
 
   // ---------- Gemini ----------
-  Future<void> _askGemini(String question) async {
+  Future<void> _askGemini(String question, {String? imagePath}) async {
     setState(() => _thinking = true);
     _toBottom();
     try {
       _askedNotifs = _ctxNotifs;
-      final res = await Gemini.ask(chat.msgs, _apps, _askedNotifs);
+      final res = await Gemini.ask(chat.msgs, _apps, _askedNotifs, imagePath: imagePath);
       if (!mounted) return;
       if (res.error != null) {
         _say(res.error!, error: true);
@@ -679,6 +691,170 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     return const SizedBox.shrink();
   }
 
+  // ---------- Pictures and things shared to Vibe ----------
+  void _onShared(Map s) {
+    final text = [s['subject'], s['text']].whereType<String>().where((e) => e.trim().isNotEmpty).join('\n');
+    _closeDrawer();
+    navKey.currentState?.popUntil((r) => r.isFirst);
+    setState(() {
+      _replyTo = null;
+      _attachImg = s['image']?.toString();
+      _attachText = text.isEmpty ? null : text;
+    });
+    _focus.requestFocus();
+  }
+
+  void _plusMenu() {
+    _focus.unfocus();
+    final c = VC.of(context);
+    Widget tile(IconData i, Color col, String label, VoidCallback onTap) => Expanded(
+          child: Pressable(
+            child: InkWell(
+              borderRadius: BorderRadius.circular(14),
+              onTap: onTap,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                child: Column(children: [
+                  Container(
+                    width: 56,
+                    height: 56,
+                    decoration: BoxDecoration(color: col, shape: BoxShape.circle),
+                    child: Icon(i, color: Colors.white, size: 28),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(label, style: TextStyle(color: c.text, fontWeight: FontWeight.w600)),
+                ]),
+              ),
+            ),
+          ),
+        );
+    showModalBottomSheet(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 0, 12, 16),
+          child: Row(children: [
+            tile(Icons.photo_camera_rounded, VC.blurple, 'Camera', () {
+              Navigator.pop(ctx);
+              _pick(ImageSource.camera);
+            }),
+            tile(Icons.photo_library_rounded, VC.green, 'Photos', () {
+              Navigator.pop(ctx);
+              _pick(ImageSource.gallery);
+            }),
+            tile(Icons.apps_rounded, const Color(0xFFEB459E), 'Apps', () {
+              Navigator.pop(ctx);
+              _openDrawer();
+            }),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _pick(ImageSource src) async {
+    try {
+      final x = await ImagePicker().pickImage(source: src, maxWidth: 1600, maxHeight: 1600, imageQuality: 85);
+      if (x == null) return;
+      final dir = await Native.filesDir();
+      final path = '$dir/img_${DateTime.now().millisecondsSinceEpoch}.jpg';
+      await File(x.path).copy(path);
+      if (!mounted) return;
+      setState(() {
+        _replyTo = null;
+        _attachImg = path;
+      });
+      _focus.requestFocus();
+    } catch (_) {
+      _say('I couldn\'t open the ${src == ImageSource.camera ? 'camera' : 'photos'}.', error: true);
+    }
+  }
+
+  Widget _attachBar(VC c) {
+    final img = _attachImg;
+    final txt = _attachText;
+    return Container(
+      margin: const EdgeInsets.fromLTRB(10, 6, 10, 0),
+      padding: const EdgeInsets.fromLTRB(8, 8, 4, 8),
+      decoration: BoxDecoration(color: c.pane, borderRadius: BorderRadius.circular(12)),
+      child: Row(children: [
+        if (img != null)
+          ClipRRect(
+            borderRadius: BorderRadius.circular(8),
+            child: Image.file(File(img), width: 52, height: 52, fit: BoxFit.cover, cacheWidth: 160),
+          )
+        else
+          Container(
+            width: 52,
+            height: 52,
+            decoration: BoxDecoration(color: c.card, borderRadius: BorderRadius.circular(8)),
+            child: Icon(Icons.link_rounded, color: c.muted),
+          ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(img != null ? 'Photo' : 'Shared with Vibe',
+                style: TextStyle(color: c.text, fontWeight: FontWeight.w700, fontSize: 14)),
+            Text(txt ?? 'Ask anything about it, or just send',
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(color: c.muted, fontSize: 13)),
+          ]),
+        ),
+        InkWell(
+          customBorder: const CircleBorder(),
+          onTap: () => setState(() {
+            _attachImg = null;
+            _attachText = null;
+          }),
+          child: Padding(padding: const EdgeInsets.all(6), child: Icon(Icons.close_rounded, size: 20, color: c.muted)),
+        ),
+      ]),
+    );
+  }
+
+  Future<void> _sendAttachment(String typed) async {
+    final img = _attachImg;
+    final shared = _attachText;
+    setState(() {
+      _attachImg = null;
+      _attachText = null;
+    });
+    final question = typed.isNotEmpty
+        ? typed
+        : img != null
+            ? 'What\'s in this picture?'
+            : 'Summarise this for me.';
+    chat.add(Msg(true, question,
+        img: img,
+        quote: shared,
+        quoteName: shared == null ? null : 'Shared',
+        quotePkg: shared == null ? null : 'me'));
+    _toBottom();
+    if (!Gemini.enabled) {
+      await Future.delayed(const Duration(milliseconds: 250));
+      _say('Add a Gemini key in Vibe settings and I can look at pictures and read what you share.');
+      return;
+    }
+    await _askGemini(question, imagePath: img);
+  }
+
+  void _viewImage(String path) {
+    showGeneralDialog(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: 'Close',
+      barrierColor: Colors.black87,
+      transitionDuration: const Duration(milliseconds: 200),
+      pageBuilder: (ctx, _, __) => GestureDetector(
+        onTap: () => Navigator.pop(ctx),
+        child: Center(child: InteractiveViewer(maxScale: 5, child: Image.file(File(path)))),
+      ),
+      transitionBuilder: (ctx, a, _, child) => FadeTransition(opacity: a, child: child),
+    );
+  }
+
   Future<void> _voice() async {
     prefs.tap();
     final t = await Native.listen();
@@ -939,6 +1115,23 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
 
   Widget _message(VC c, Msg m, DateTime t, bool head) {
     final body = <Widget>[
+      if (m.img != null)
+        Padding(
+          padding: const EdgeInsets.only(top: 2, bottom: 4),
+          child: GestureDetector(
+            onTap: () => _viewImage(m.img!),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(10),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 240, maxHeight: 300),
+                child: Image.file(File(m.img!),
+                    fit: BoxFit.cover,
+                    cacheWidth: 600,
+                    errorBuilder: (_, __, ___) => Text('Picture not available', style: TextStyle(color: c.faint))),
+              ),
+            ),
+          ),
+        ),
       if (m.isNotif && !m.media && (m.title ?? '').isNotEmpty)
         Text(m.title!, style: TextStyle(color: c.text, fontSize: 15, fontWeight: FontWeight.w700)),
       if (m.text.isNotEmpty)
@@ -1357,7 +1550,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
 
   // ---------- message box ----------
   Widget _inputBar(VC c) {
-    final typing = _input.text.trim().isNotEmpty;
+    final typing = _input.text.trim().isNotEmpty || _attachImg != null || _attachText != null;
     final to = _replyTo;
     final bar = Padding(
       padding: const EdgeInsets.fromLTRB(10, 6, 10, 10),
@@ -1372,7 +1565,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
                 shape: const CircleBorder(),
                 child: InkWell(
                   customBorder: const CircleBorder(),
-                  onTap: () { prefs.tap(); _openDrawer(); },
+                  onTap: () { prefs.tap(); _plusMenu(); },
                   child: Padding(
                     padding: const EdgeInsets.all(9),
                     child: Icon(Icons.add_rounded, color: c.muted, size: 24),
@@ -1392,7 +1585,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
                   style: TextStyle(color: c.text, fontSize: 16),
                   decoration: InputDecoration(
                     hintText: to == null
-                        ? 'Message Vibe'
+                        ? (_attachImg != null || _attachText != null ? 'Ask Vibe about this…' : 'Message Vibe')
                         : to.media
                             ? 'Play, pause, next, back or a song'
                             : 'Reply to ${!to.isNotif ? 'Vibe' : to.title?.isNotEmpty == true ? to.title : to.app}',
@@ -1423,7 +1616,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
         ),
       ]),
     );
-    if (to == null) return bar;
+    if (to == null && _attachImg == null && _attachText == null) return bar;
+    if (to == null) return Column(mainAxisSize: MainAxisSize.min, children: [_attachBar(c), bar]);
     return Column(mainAxisSize: MainAxisSize.min, children: [
       Container(
         margin: const EdgeInsets.fromLTRB(10, 6, 10, 0),

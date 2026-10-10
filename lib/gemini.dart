@@ -98,6 +98,7 @@ class Gemini {
         'When the user wants something done on the phone, call the matching function. '
         'For anything current or factual you are not sure about, call web_search. '
         'If you call a function, you may add a very short message like "Opening WhatsApp" — no more. '
+        'When the user sends a picture, look at it carefully and answer about it directly. '
         'Current local time: ${now.toIso8601String()} (${_weekday(now.weekday)}). '
         'User\'s name: ${prefs.name}. '
         'Installed apps: ${names.join(', ')}.'
@@ -148,12 +149,12 @@ class Gemini {
       if (out.isNotEmpty && out.last['role'] == role) {
         if (role == 'user') {
           // An earlier message that never got an answer: drop it so Gemini answers the newest one
-          out[out.length - 1] = {'role': 'user', 'parts': [{'text': text}]};
+          out[out.length - 1] = {'role': 'user', 'parts': <Map>[{'text': text}]};
         } else {
           (out.last['parts'] as List).add({'text': text});
         }
       } else {
-        out.add({'role': role, 'parts': [{'text': text}]});
+        out.add({'role': role, 'parts': <Map>[{'text': text}]});
       }
     }
     while (out.isNotEmpty && out.first['role'] != 'user') {
@@ -163,10 +164,20 @@ class Gemini {
   }
 
   /// Main call: Gemini decides to reply and/or call functions.
-  static Future<GeminiResult> ask(List<Msg> history, List<AppEntry> apps, List<Msg> notifs) async {
+  static Future<GeminiResult> ask(List<Msg> history, List<AppEntry> apps, List<Msg> notifs,
+      {String? imagePath}) async {
+    final contents = _history(history);
+    // Attach the picture to your newest message so Gemini can see it
+    if (imagePath != null && contents.isNotEmpty && contents.last['role'] == 'user') {
+      try {
+        final bytes = await File(imagePath).readAsBytes();
+        (contents.last['parts'] as List)
+            .insert(0, {'inlineData': {'mimeType': 'image/jpeg', 'data': base64Encode(bytes)}});
+      } catch (_) {}
+    }
     final body = {
       'systemInstruction': {'parts': [{'text': _system(apps, notifs)}]},
-      'contents': _history(history),
+      'contents': contents,
       'tools': _tools,
     };
     return _post(body);
