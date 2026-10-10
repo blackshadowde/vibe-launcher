@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.Environment
 import android.os.StatFs
 import android.provider.Settings
+import android.speech.RecognizerIntent
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -19,6 +20,8 @@ import java.io.ByteArrayOutputStream
 class MainActivity : FlutterActivity() {
     private val channelName = "vibe/launcher"
     private var channel: MethodChannel? = null
+    private var listenResult: MethodChannel.Result? = null
+    private val listenCode = 4721
 
     override fun configureFlutterEngine(engine: FlutterEngine) {
         super.configureFlutterEngine(engine)
@@ -52,6 +55,17 @@ class MainActivity : FlutterActivity() {
                 )
                 "isDefaultLauncher" -> result.success(isDefaultLauncher())
                 "deviceInfo" -> result.success(deviceInfo())
+                "listen" -> {
+                    listenResult?.success(null)
+                    listenResult = result
+                    val i = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+                        .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                        .putExtra(RecognizerIntent.EXTRA_PROMPT, "Tell Vibe what to do")
+                        .putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+                    try { startActivityForResult(i, listenCode) } catch (e: Exception) {
+                        listenResult = null; result.success(null)
+                    }
+                }
                 else -> result.notImplemented()
             }
         }
@@ -61,6 +75,16 @@ class MainActivity : FlutterActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         if (intent.hasCategory(Intent.CATEGORY_HOME)) channel?.invokeMethod("homePressed", null)
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == listenCode) {
+            val text = data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()
+            listenResult?.success(if (resultCode == RESULT_OK) text else null)
+            listenResult = null
+        }
     }
 
     private fun open(i: Intent): Boolean = try {
