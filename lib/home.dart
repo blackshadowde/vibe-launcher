@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'chat.dart';
+import 'gemini.dart';
 import 'launcher.dart';
 import 'main.dart';
 import 'profile_sheet.dart';
@@ -23,6 +24,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   List<AppEntry> _apps = [];
   bool _isDefault = true;
   bool _loaded = false;
+  bool _thinking = false;
 
   @override
   void initState() {
@@ -108,31 +110,152 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _toBottom();
 
     final r = Brain.handle(text, _apps);
-    await Future.delayed(const Duration(milliseconds: 250));
+    if (!r.sure && Gemini.enabled) {
+      await _askGemini(text);
+    } else {
+      await Future.delayed(const Duration(milliseconds: 250));
+      await _doLocal(r);
+    }
+  }
+
+  void _say(String text, {List<String> apps = const [], List<Map> links = const [], bool error = false}) {
+    chat.add(Msg(false, text, apps: apps, links: links, error: error));
+    _toBottom();
+  }
+
+  Future<void> _pause() => Future.delayed(const Duration(milliseconds: 350));
+
+  Future<void> _doLocal(Reply r) async {
     if (r.act == Act.clear) {
       chat.clear();
-      chat.add(Msg(false, 'Chat cleared.'));
+      _say('Chat cleared.');
       return;
     }
-    chat.add(Msg(false, r.text,
-        apps: r.app != null ? [r.app!.pkg] : r.choices.map((e) => e.pkg).toList()));
-    _toBottom();
-    await Future.delayed(const Duration(milliseconds: 350));
+    _say(r.text, apps: r.app != null ? [r.app!.pkg] : r.choices.map((e) => e.pkg).toList());
+    await _pause();
     if (!mounted) return;
     switch (r.act) {
       case Act.open:
         _launch(r.app!);
       case Act.drawer:
-        _focus.unfocus();
-        _scaffold.currentState?.openDrawer();
+        _openDrawer();
       case Act.phoneSettings:
         _focus.unfocus();
         Native.openSettings();
       case Act.launcherSettings:
-        _focus.unfocus();
-        Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SettingsPage()));
+        _openLauncherSettings();
       default:
         break;
+    }
+  }
+
+  void _openDrawer() {
+    _focus.unfocus();
+    _scaffold.currentState?.openDrawer();
+  }
+
+  void _openLauncherSettings() {
+    _focus.unfocus();
+    Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SettingsPage()));
+  }
+
+  // ---------- Gemini ----------
+  Future<void> _askGemini(String question) async {
+    setState(() => _thinking = true);
+    _toBottom();
+    try {
+      final res = await Gemini.ask(chat.msgs, _apps);
+      if (!mounted) return;
+      if (res.error != null) {
+        _say(res.error!, error: true);
+        return;
+      }
+      if (res.calls.isEmpty) {
+        _say(res.text.isEmpty ? '🤔' : res.text);
+        return;
+      }
+      var preface = res.text;
+      for (final call in res.calls) {
+        await _runCall(call, preface, question);
+        preface = '';
+      }
+    } finally {
+      if (mounted) setState(() => _thinking = false);
+    }
+  }
+
+  Future<void> _runCall(Call call, String preface, String question) async {
+    final a = call.args;
+    String str(String k) => (a[k] ?? '').toString().trim();
+    int toInt(String k, int d) => (a[k] is num) ? (a[k] as num).toInt() : int.tryParse(str(k)) ?? d;
+    String say(String fallback) => preface.isNotEmpty ? preface : fallback;
+
+    switch (call.name) {
+      case 'open_app':
+        final name = str('app_name');
+        final found = Brain.match(Brain.norm(name), _apps);
+        if (found.isEmpty) {
+          _say('I couldn\'t find an app called "$name".');
+          return;
+        }
+        final app = found.first.app;
+        _say(say('Opening ${app.label}…'), apps: [app.pkg]);
+        await _pause();
+        _launch(app);
+      case 'show_all_apps':
+        _say(say('Here are all your apps.'));
+        await _pause();
+        _openDrawer();
+      case 'open_settings':
+        if (str('target') == 'launcher') {
+          _say(say('Opening launcher settings…'));
+          await _pause();
+          _openLauncherSettings();
+        } else {
+          _say(say('Opening Settings…'));
+          await _pause();
+          Native.openSettings();
+        }
+      case 'web_search':
+        final q = str('query');
+        final res = await Gemini.search(q.isEmpty ? question : q, question);
+        if (!mounted) return;
+        if (res.error != null) {
+          _say(res.error!, error: true);
+        } else {
+          _say(res.text.isEmpty ? 'I couldn\'t find anything on that.' : res.text,
+              links: res.sources.map((s) => {'t': s.title, 'u': s.url}).toList());
+        }
+      case 'open_url':
+        final url = str('url');
+        _say(say('Opening the link…'), links: [{'t': Uri.tryParse(url)?.host ?? url, 'u': url}]);
+        await _pause();
+        Native.openUrl(url);
+      case 'play_music':
+        final q = str('query');
+        _say(say('Playing $q…'));
+        await _pause();
+        if (!await Native.playMusic(q)) {
+          _say('Your music app can\'t play by search, so I opened it on YouTube Music instead.');
+          Native.openUrl('https://music.youtube.com/search?q=${Uri.encodeComponent(q)}');
+        }
+      case 'set_alarm':
+        final h = toInt('hour', 7).clamp(0, 23), m = toInt('minute', 0).clamp(0, 59);
+        final ok = await Native.setAlarm(h, m, str('label'));
+        _say(ok
+            ? say('Alarm set for ${clock(DateTime(2000, 1, 1, h, m))}.')
+            : 'Your clock app didn\'t accept the alarm.');
+      case 'set_timer':
+        final secs = toInt('seconds', 60).clamp(1, 86400);
+        final ok = await Native.setTimer(secs, str('label'));
+        final mins = secs ~/ 60, rem = secs % 60;
+        final len = mins == 0 ? '$rem sec' : rem == 0 ? '$mins min' : '$mins min $rem sec';
+        _say(ok ? say('Timer set for $len.') : 'Your clock app didn\'t accept the timer.');
+      case 'clear_chat':
+        chat.clear();
+        _say('Chat cleared.');
+      default:
+        _say(preface.isEmpty ? 'I can\'t do that yet.' : preface);
     }
   }
 
@@ -262,8 +385,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         controller: _scroll,
         reverse: true,
         padding: const EdgeInsets.only(top: 12, bottom: 8),
-        itemCount: n,
-        itemBuilder: (_, i) {
+        itemCount: n + (_thinking ? 1 : 0),
+        itemBuilder: (_, idx) {
+          if (_thinking && idx == 0) return _typingRow(c);
+          final i = _thinking ? idx - 1 : idx;
           final m = msgs[n - 1 - i];
           final older = n - 2 - i >= 0 ? msgs[n - 2 - i] : null;
           final t = DateTime.fromMillisecondsSinceEpoch(m.ts);
@@ -278,6 +403,17 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       ),
     );
   }
+
+  Widget _typingRow(VC c) => Padding(
+        padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
+        child: Row(children: [
+          const BotAvatar(size: 24),
+          const SizedBox(width: 8),
+          const TypingDots(),
+          const SizedBox(width: 8),
+          Text('Vibe is typing…', style: TextStyle(color: c.muted, fontSize: 13, fontWeight: FontWeight.w600)),
+        ]),
+      );
 
   Widget _dayDivider(VC c, DateTime t) => Padding(
         padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
@@ -294,8 +430,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   Widget _message(VC c, Msg m, DateTime t, bool head) {
     final body = <Widget>[
-      if (m.text.isNotEmpty)
-        Text(m.text, style: TextStyle(color: c.text, fontSize: 16, height: 1.35)),
+      if (m.text.isNotEmpty) richText(m.text, c, error: m.error),
+      if (m.links.isNotEmpty) linkChips(m.links, c),
       for (final p in m.apps)
         if (_byPkg(p) case final a?)
           AppCard(app: a, onOpen: () => _launch(a), onLongPress: () => showAppMenu(context, a, () => _launch(a))),

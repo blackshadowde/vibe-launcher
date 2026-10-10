@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'gemini.dart';
 import 'launcher.dart';
 import 'theme.dart';
 
@@ -39,6 +40,36 @@ class SettingsPage extends StatelessWidget {
                   context, MaterialPageRoute(builder: (_) => const _HiddenAppsPage())),
             ),
           ]),
+          _section(c, 'VIBE AI (GEMINI)'),
+          _group(c, [
+            ListTile(
+              leading: Icon(Icons.key_rounded, color: c.muted),
+              title: Text('Gemini API key', style: TextStyle(color: c.text)),
+              subtitle: Text(
+                  prefs.geminiKey.isEmpty
+                      ? 'Not set: Vibe only opens apps'
+                      : 'Set (…${prefs.geminiKey.substring(prefs.geminiKey.length - 4)}). Stored only on this phone',
+                  style: TextStyle(color: prefs.geminiKey.isEmpty ? VC.yellow : c.faint)),
+              trailing: Icon(Icons.chevron_right_rounded, color: c.faint),
+              onTap: () => _editText(context, 'Gemini API key', prefs.geminiKey, prefs.setGeminiKey,
+                  hint: 'Paste your key', secret: true),
+            ),
+            ListTile(
+              leading: Icon(Icons.open_in_new_rounded, color: c.muted),
+              title: Text('Get a free key', style: TextStyle(color: c.text)),
+              subtitle: Text('Google AI Studio → Get API key', style: TextStyle(color: c.faint)),
+              onTap: () => Native.openUrl('https://aistudio.google.com/apikey'),
+            ),
+            ListTile(
+              leading: Icon(Icons.memory_rounded, color: c.muted),
+              title: Text('Model', style: TextStyle(color: c.text)),
+              subtitle: Text(prefs.geminiModel.isEmpty ? '${Gemini.defaultModel} (default)' : prefs.geminiModel,
+                  style: TextStyle(color: c.faint)),
+              trailing: Icon(Icons.chevron_right_rounded, color: c.faint),
+              onTap: () => _editText(context, 'Gemini model', prefs.geminiModel, prefs.setGeminiModel,
+                  hint: Gemini.defaultModel),
+            ),
+          ]),
           _section(c, 'FEEL'),
           _group(c, [
             SwitchListTile(
@@ -63,12 +94,52 @@ class SettingsPage extends StatelessWidget {
             ListTile(
               leading: Icon(Icons.info_outline_rounded, color: c.muted),
               title: Text('Vibe Launcher', style: TextStyle(color: c.text)),
-              subtitle: Text('Version 0.2.0', style: TextStyle(color: c.faint)),
+              subtitle: Text('Version 0.3.0', style: TextStyle(color: c.faint)),
             ),
           ]),
         ]),
       ),
     );
+  }
+
+  Future<void> _editText(BuildContext context, String title, String value, void Function(String) save,
+      {String hint = '', bool secret = false}) async {
+    final c = VC.of(context);
+    final ctrl = TextEditingController(text: value);
+    var hide = secret;
+    final v = await showDialog<String>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, set) => AlertDialog(
+          title: Text(title, style: TextStyle(color: c.text)),
+          content: TextField(
+            controller: ctrl,
+            autofocus: true,
+            obscureText: hide,
+            autocorrect: false,
+            enableSuggestions: false,
+            style: TextStyle(color: c.text),
+            decoration: InputDecoration(
+              hintText: hint,
+              suffixIcon: secret
+                  ? IconButton(
+                      icon: Icon(hide ? Icons.visibility_rounded : Icons.visibility_off_rounded),
+                      onPressed: () => set(() => hide = !hide))
+                  : null,
+            ),
+          ),
+          actions: [
+            if (value.isNotEmpty)
+              TextButton(
+                  onPressed: () => Navigator.pop(ctx, ''),
+                  child: const Text('Clear', style: TextStyle(color: VC.red))),
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+            FilledButton(onPressed: () => Navigator.pop(ctx, ctrl.text), child: const Text('Save')),
+          ],
+        ),
+      ),
+    );
+    if (v != null) save(v);
   }
 
   Widget _section(VC c, String t) => Padding(

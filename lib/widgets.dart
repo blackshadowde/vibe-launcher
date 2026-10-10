@@ -197,3 +197,122 @@ void showAppMenu(BuildContext context, AppEntry a, VoidCallback onOpen) {
     ),
   );
 }
+
+/// Light Markdown for Gemini replies: **bold**, *italic*, `code`, bullets and headings.
+Widget richText(String text, VC c, {bool error = false}) {
+  final base = TextStyle(color: error ? VC.red : c.text, fontSize: 16, height: 1.35);
+  final lines = text.replaceAll('\r', '').split('\n');
+  final spans = <InlineSpan>[];
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i];
+    var style = base;
+    final h = RegExp(r'^#{1,6}\s+').firstMatch(line);
+    if (h != null) {
+      line = line.substring(h.end);
+      style = base.copyWith(fontWeight: FontWeight.w800);
+    }
+    final b = RegExp(r'^(\s*)[*\-•]\s+').firstMatch(line);
+    if (b != null) line = '${b.group(1)}•  ${line.substring(b.end)}';
+    spans.addAll(_inline(line, style, c));
+    if (i < lines.length - 1) spans.add(const TextSpan(text: '\n'));
+  }
+  return Text.rich(TextSpan(children: spans));
+}
+
+List<InlineSpan> _inline(String s, TextStyle style, VC c) {
+  final out = <InlineSpan>[];
+  final re = RegExp(r'\*\*(.+?)\*\*|`([^`]+)`|(?<![*\w])\*(?!\s)(.+?)(?<!\s)\*(?![*\w])');
+  var last = 0;
+  for (final m in re.allMatches(s)) {
+    if (m.start > last) out.add(TextSpan(text: s.substring(last, m.start), style: style));
+    if (m.group(1) != null) {
+      out.add(TextSpan(text: m.group(1), style: style.copyWith(fontWeight: FontWeight.w800)));
+    } else if (m.group(2) != null) {
+      out.add(TextSpan(
+          text: m.group(2),
+          style: style.copyWith(fontFamily: 'monospace', backgroundColor: c.card, fontSize: 14)));
+    } else {
+      out.add(TextSpan(text: m.group(3), style: style.copyWith(fontStyle: FontStyle.italic)));
+    }
+    last = m.end;
+  }
+  if (last < s.length) out.add(TextSpan(text: s.substring(last), style: style));
+  return out;
+}
+
+/// Source links under a search answer.
+Widget linkChips(List<Map> links, VC c) => Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Wrap(spacing: 6, runSpacing: 6, children: [
+        for (var i = 0; i < links.length; i++)
+          Material(
+            color: c.pane,
+            shape: StadiumBorder(side: BorderSide(color: c.divider)),
+            child: InkWell(
+              customBorder: const StadiumBorder(),
+              onTap: () => Native.openUrl((links[i]['u'] ?? '').toString()),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(8, 4, 10, 4),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  Container(
+                    width: 18,
+                    height: 18,
+                    alignment: Alignment.center,
+                    decoration: const BoxDecoration(color: VC.blurple, shape: BoxShape.circle),
+                    child: Text('${i + 1}',
+                        style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w700)),
+                  ),
+                  const SizedBox(width: 6),
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 160),
+                    child: Text((links[i]['t'] ?? 'Source').toString(),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: c.muted, fontSize: 13, fontWeight: FontWeight.w600)),
+                  ),
+                ]),
+              ),
+            ),
+          ),
+      ]),
+    );
+
+/// Three bouncing dots while Vibe is thinking.
+class TypingDots extends StatefulWidget {
+  const TypingDots({super.key});
+  @override
+  State<TypingDots> createState() => _TypingDotsState();
+}
+
+class _TypingDotsState extends State<TypingDots> with SingleTickerProviderStateMixin {
+  late final AnimationController _a =
+      AnimationController(vsync: this, duration: const Duration(milliseconds: 900))..repeat();
+
+  @override
+  void dispose() {
+    _a.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = VC.of(context);
+    return AnimatedBuilder(
+      animation: _a,
+      builder: (_, __) => Row(mainAxisSize: MainAxisSize.min, children: [
+        for (var i = 0; i < 3; i++)
+          Transform.translate(
+            offset: Offset(0, -3 * _bounce((_a.value - i * 0.15) % 1.0)),
+            child: Container(
+              width: 6,
+              height: 6,
+              margin: const EdgeInsets.symmetric(horizontal: 1.5),
+              decoration: BoxDecoration(color: c.muted, shape: BoxShape.circle),
+            ),
+          ),
+      ]),
+    );
+  }
+
+  double _bounce(double t) => t < 0.3 ? (t / 0.3) : t < 0.6 ? (1 - (t - 0.3) / 0.3) : 0;
+}

@@ -43,6 +43,15 @@ class Native {
 
   /// Opens Android's voice typing and returns what was said (null if cancelled).
   static Future<String?> listen() => _c.invokeMethod<String>('listen');
+
+  static Future<bool> openUrl(String url) async =>
+      await _c.invokeMethod<bool>('openUrl', {'url': url}) ?? false;
+  static Future<bool> playMusic(String q) async =>
+      await _c.invokeMethod<bool>('playMusic', {'query': q}) ?? false;
+  static Future<bool> setAlarm(int h, int m, String label) async =>
+      await _c.invokeMethod<bool>('setAlarm', {'hour': h, 'minute': m, 'label': label}) ?? false;
+  static Future<bool> setTimer(int s, String label) async =>
+      await _c.invokeMethod<bool>('setTimer', {'seconds': s, 'label': label}) ?? false;
 }
 
 /// "Servers" in the left rail. Built from Android's own app categories.
@@ -70,6 +79,8 @@ class Prefs extends ChangeNotifier {
   SortMode sort = SortMode.recent;
   bool haptics = true;
   String name = 'You';
+  String geminiKey = '';
+  String geminiModel = '';
   Set<String> hidden = {};
   Map<String, int> lastUsed = {};
 
@@ -79,6 +90,8 @@ class Prefs extends ChangeNotifier {
     sort = SortMode.values[_p.getInt('sort') ?? 0];
     haptics = _p.getBool('haptics') ?? true;
     name = _p.getString('name') ?? 'You';
+    geminiKey = _p.getString('geminiKey') ?? '';
+    geminiModel = _p.getString('geminiModel') ?? '';
     hidden = (_p.getStringList('hidden') ?? []).toSet();
     try {
       lastUsed = Map<String, int>.from(jsonDecode(_p.getString('lastUsed') ?? '{}'));
@@ -93,6 +106,9 @@ class Prefs extends ChangeNotifier {
     _p.setString('name', name);
     notifyListeners();
   }
+
+  void setGeminiKey(String v) { geminiKey = v.trim(); _p.setString('geminiKey', geminiKey); notifyListeners(); }
+  void setGeminiModel(String v) { geminiModel = v.trim(); _p.setString('geminiModel', geminiModel); notifyListeners(); }
 
   void toggleHidden(String pkg) {
     hidden.contains(pkg) ? hidden.remove(pkg) : hidden.add(pkg);

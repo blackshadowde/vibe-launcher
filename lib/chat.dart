@@ -9,12 +9,24 @@ class Msg {
   final String text;
   final int ts;
   final List<String> apps; // app cards shown under a Vibe reply
-  Msg(this.me, this.text, {int? ts, this.apps = const []})
+  final List<Map> links; // web sources: {t: title, u: url}
+  final bool error;
+  Msg(this.me, this.text, {int? ts, this.apps = const [], this.links = const [], this.error = false})
       : ts = ts ?? DateTime.now().millisecondsSinceEpoch;
 
-  Map toJson() => {'m': me, 't': text, 's': ts, if (apps.isNotEmpty) 'a': apps};
+  Map toJson() => {
+        'm': me,
+        't': text,
+        's': ts,
+        if (apps.isNotEmpty) 'a': apps,
+        if (links.isNotEmpty) 'l': links,
+        if (error) 'e': true,
+      };
   static Msg fromJson(Map j) => Msg(j['m'] == true, j['t'] ?? '',
-      ts: j['s'] ?? 0, apps: List<String>.from(j['a'] ?? const []));
+      ts: j['s'] ?? 0,
+      apps: List<String>.from(j['a'] ?? const []),
+      links: List<Map>.from(j['l'] ?? const []),
+      error: j['e'] == true);
 }
 
 /// Chat history, kept on the phone (last 300 lines).
@@ -52,7 +64,9 @@ class Reply {
   final Act act;
   final AppEntry? app;
   final List<AppEntry> choices;
-  Reply(this.text, {this.act = Act.none, this.app, this.choices = const []});
+  /// false = the offline brain didn't really understand; let Gemini try.
+  final bool sure;
+  Reply(this.text, {this.act = Act.none, this.app, this.choices = const [], this.sure = true});
 }
 
 /// Offline command understanding. Gemini comes later for anything this can't handle.
@@ -64,7 +78,8 @@ class Brain {
       '• "launcher settings"\n'
       '• "clear chat"\n'
       '• Long-press my avatar for your recent apps\n'
-      'Messages, music and smarter replies come next.';
+      'With a Gemini key (launcher settings) you can also just talk to me: ask questions, '
+      'search Google, play music, set alarms and timers.';
 
   static String norm(String s) => s
       .toLowerCase()
@@ -80,7 +95,7 @@ class Brain {
     if (q.isEmpty) return Reply('🤔');
 
     if (const {'hi', 'hello', 'hey', 'hii', 'yo', 'hlo'}.contains(q)) {
-      return Reply('Hey! What should I open?');
+      return Reply('Hey! What should I open?', sure: false);
     }
     if (const {'help', 'what can you do', 'commands', '?'}.contains(q)) return Reply(help);
     if (const {'clear', 'clear chat', 'delete chat', 'clear all'}.contains(q)) {
@@ -104,18 +119,28 @@ class Brain {
     final found = match(name, apps);
 
     if (found.isEmpty) {
-      return Reply(hasVerb
-          ? 'I couldn\'t find an app called "$name". Swipe in from the left to see all apps.'
-          : 'I don\'t understand that yet. Try "open WhatsApp", or type "help".');
+      return Reply(
+          hasVerb
+              ? 'I couldn\'t find an app called "$name". Swipe in from the left to see all apps.'
+              : 'I don\'t understand that yet. Try "open WhatsApp", or type "help". '
+                  'Add a Gemini key in launcher settings and I can chat, search and do much more.',
+          sure: false);
     }
     final best = found.first;
     final strong = best.score >= 80 || (hasVerb && best.score >= 50);
     final tie = found.length > 1 && found[1].score == best.score;
     if (strong && !tie) {
-      return Reply('Opening ${best.app.label}…', act: Act.open, app: best.app);
+      // score 60 = app name found inside a longer sentence ("open youtube and play lofi"):
+      // fine offline, but Gemini understands the rest of the sentence better
+      return Reply('Opening ${best.app.label}…', act: Act.open, app: best.app, sure: best.score > 60);
     }
     if (!hasVerb && best.score < 60) {
-      return Reply('I don\'t understand that yet. Try "open WhatsApp", or type "help".');
+      return Reply('I don\'t understand that yet. Try "open WhatsApp", or type "help".', sure: false);
+    }
+    // A long sentence that only loosely matches an app is probably a question, not an app name
+    if (!hasVerb && name.split(' ').length > 3) {
+      return Reply('Did you mean one of these?',
+          choices: found.take(4).map((e) => e.app).toList(), sure: false);
     }
     return Reply(found.length == 1 ? 'Did you mean this?' : 'Which one?',
         choices: found.take(4).map((e) => e.app).toList());
