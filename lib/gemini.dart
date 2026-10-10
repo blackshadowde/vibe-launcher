@@ -48,6 +48,18 @@ class Gemini {
           'label': _s('Optional label'),
         }, ['seconds']),
         _fn('clear_chat', 'Delete the chat history with Vibe.', {}, []),
+        _fn('call_person', 'Phone call to someone in the user\'s contacts.',
+            {'name': _s('Contact name as the user said it, e.g. "mom" or "Ravi"')}, ['name']),
+        _fn('message_person',
+            'Send a message to someone in the user\'s contacts (WhatsApp or SMS). '
+                'Write the message text the way the user would, in their language.',
+            {
+              'name': _s('Contact name as the user said it'),
+              'text': _s('The message to send. Empty to just open the chat'),
+              'via': {'type': 'string', 'enum': ['whatsapp', 'sms', 'default']},
+            },
+            ['name']),
+        _fn('recent_calls', 'Show recent and missed phone calls.', {}, []),
         _fn('media_control', 'Control the music that is playing (or was last playing).', {
           'action': {'type': 'string', 'enum': ['play', 'pause', 'next', 'previous']},
         }, ['action']),

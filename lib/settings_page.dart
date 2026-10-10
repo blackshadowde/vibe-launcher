@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'gemini.dart';
 import 'launcher.dart';
+import 'people.dart';
 import 'theme.dart';
 
 /// Long-press the gear: launcher settings.
@@ -86,6 +87,36 @@ class SettingsPage extends StatelessWidget {
                   context, MaterialPageRoute(builder: (_) => const _AppTogglePage(muted: true))),
             ),
           ]),
+          _section(c, 'PEOPLE'),
+          _group(c, [
+            FutureBuilder<Map>(
+              future: Native.peoplePerms(),
+              builder: (_, snap) {
+                final m = snap.data ?? {};
+                final all = m.isNotEmpty && m.values.every((v) => v == true);
+                final missing = [
+                  if (m['contacts'] != true) 'contacts',
+                  if (m['calls'] != true) 'call log',
+                  if (m['phone'] != true) 'calls',
+                  if (m['sms'] != true) 'SMS',
+                ];
+                return ListTile(
+                  leading: Icon(Icons.contacts_rounded, color: c.muted),
+                  title: Text('Contacts, calls & SMS', style: TextStyle(color: c.text)),
+                  subtitle: Text(all ? 'Allowed' : 'Not allowed: ${missing.join(', ')}. Tap to allow',
+                      style: TextStyle(color: all ? VC.green : VC.yellow)),
+                  trailing: Icon(Icons.chevron_right_rounded, color: c.faint),
+                  onTap: () async {
+                    await People.ensure();
+                    prefs.refresh();
+                  },
+                );
+              },
+            ),
+            _radio(c, '"Message someone" uses WhatsApp', prefs.messenger == 'whatsapp',
+                () => prefs.setMessenger('whatsapp')),
+            _radio(c, '"Message someone" uses SMS', prefs.messenger == 'sms', () => prefs.setMessenger('sms')),
+          ]),
           _section(c, 'VIBE AI (GEMINI)'),
           _group(c, [
             ListTile(
@@ -163,7 +194,7 @@ class SettingsPage extends StatelessWidget {
             ListTile(
               leading: Icon(Icons.info_outline_rounded, color: c.muted),
               title: Text('Vibe Launcher', style: TextStyle(color: c.text)),
-              subtitle: Text('Version 0.7.0', style: TextStyle(color: c.faint)),
+              subtitle: Text('Version 0.8.0', style: TextStyle(color: c.faint)),
             ),
           ]),
         ]),

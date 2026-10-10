@@ -4,6 +4,7 @@ import 'chat.dart';
 import 'gemini.dart';
 import 'launcher.dart';
 import 'main.dart';
+import 'people.dart';
 import 'profile_sheet.dart';
 import 'settings_page.dart';
 import 'theme.dart';
@@ -63,6 +64,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
   }
 
   Future<void> _refresh() async {
+    if (People.all.isEmpty) People.load();
     final list = await Native.apps();
     final def = await Native.isDefault();
     final access = await Native.notifAccess();
@@ -125,6 +127,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     chat.add(Msg(true, text));
     _toBottom();
 
+    final pc = People.parse(text);
+    if (pc != null && await _people(pc)) return;
     final r = Brain.handle(text, _apps);
     if (!r.sure && Gemini.enabled) {
       await _askGemini(text);
@@ -134,8 +138,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     }
   }
 
-  void _say(String text, {List<String> apps = const [], List<Map> links = const [], bool error = false}) {
-    chat.add(Msg(false, text, apps: apps, links: links, error: error));
+  void _say(String text,
+      {List<String> apps = const [], List<Map> links = const [], bool error = false, Map? card}) {
+    chat.add(Msg(false, text, apps: apps, links: links, error: error, card: card));
     _toBottom();
   }
 
@@ -316,6 +321,19 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
         if (!await Native.mediaControl(null, action.isEmpty ? 'toggle' : action)) {
           _say('Nothing is playing right now, or notification access is off.');
         }
+      case 'call_person':
+        if (!await _people(PeopleCmd('call', name: str('name')), preface: preface)) {
+          _say('I couldn\'t find "${str('name')}" in your contacts.');
+        }
+      case 'message_person':
+        if (!await _people(
+            PeopleCmd('message', name: str('name'), text: str('text'), via: str('via') == 'default' ? '' : str('via')),
+            preface: preface)) {
+          _say('I couldn\'t find "${str('name')}" in your contacts.');
+        }
+      case 'recent_calls':
+        if (preface.isNotEmpty) _say(preface);
+        await _showCalls();
       case 'clear_chat':
         chat.clear();
         _say('Chat cleared.');
@@ -328,6 +346,316 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     final i = int.tryParse(id.replaceAll(RegExp(r'[^0-9]'), ''));
     if (i == null || i < 1 || i > _askedNotifs.length) return null;
     return _askedNotifs[i - 1];
+  }
+
+  // ---------- People ----------
+  PeopleCmd? _pending; // waiting for you to pick which contact
+
+  Map _contactMap(Person p) => {'id': p.id, 'name': p.name, 'number': p.number, 'photo': p.hasPhoto};
+
+  Person _personOf(Map m) {
+    for (final p in People.all) {
+      if (p.id == m['id'] && p.number == m['number']) return p;
+    }
+    return Person((m['id'] ?? '').toString(), (m['name'] ?? '').toString(), (m['number'] ?? '').toString(),
+        true, false, false, m['photo'] == true);
+  }
+
+  /// Handles call / message / call history. False = no such contact, let Vibe try something else.
+  Future<bool> _people(PeopleCmd pc, {String preface = ''}) async {
+    if (!await People.ensure()) {
+      _say('I need permission to see your contacts for that. Allow it when Android asks, or in Vibe settings → People.',
+          error: true);
+      return true;
+    }
+    if (pc.action == 'calls') {
+      if (preface.isNotEmpty) _say(preface);
+      await _showCalls();
+      return true;
+    }
+    final found = People.match(pc.name);
+    if (found.isEmpty) return false;
+    final best = found.first;
+    final tie = found.length > 1 && found[1].score == best.score && found[1].p.id != best.p.id;
+    if (best.score < 80 || tie) {
+      _pending = pc;
+      _say(preface.isNotEmpty ? preface : 'Which ${pc.name}?',
+          card: {'type': 'people', 'items': found.take(4).map((e) => _contactMap(e.p)).toList()});
+      return true;
+    }
+    await _doPeople(pc, best.p, preface);
+    return true;
+  }
+
+  Future<void> _doPeople(PeopleCmd pc, Person p, String preface) async {
+    _pending = null;
+    final card = {'type': 'contact', ..._contactMap(p)};
+    if (pc.action == 'call') {
+      _say(preface.isNotEmpty ? preface : 'Calling ${p.name}…', card: card);
+      await _pause();
+      if (!await Native.call(p.number)) _say('Your phone didn\'t let me start the call.', error: true);
+      return;
+    }
+    final via = pc.via.isNotEmpty ? pc.via : prefs.messenger;
+    final text = pc.text.trim();
+    if (via == 'whatsapp') {
+      _say(text.isEmpty ? 'Opening WhatsApp chat with ${p.name}…' : 'Your message to ${p.name} is ready in WhatsApp. Tap Send.',
+          card: card);
+      await _pause();
+      if (!await Native.whatsapp(p.number, text)) {
+        _say('WhatsApp didn\'t open, so I opened Messages instead.');
+        Native.smsApp(p.number, text);
+      }
+      return;
+    }
+    if (text.isEmpty) {
+      _say('Opening Messages for ${p.name}…', card: card);
+      await _pause();
+      Native.smsApp(p.number, text);
+      return;
+    }
+    // SMS goes out for real, so confirm first
+    _say('Send this SMS?', card: {'type': 'sms', ..._contactMap(p), 'text': text, 'state': 'ready'});
+  }
+
+  Future<void> _showCalls() async {
+    final calls = await Native.callLog(8);
+    if (calls.isEmpty) {
+      _say(People.perms['calls'] == true
+          ? 'No recent calls.'
+          : 'I need call log permission to see your calls. Allow it in Vibe settings → People.');
+      return;
+    }
+    final missed = calls.where((e) => e['type'] == 'missed').length;
+    _say(missed == 0 ? 'Your recent calls:' : 'Your recent calls ($missed missed):', card: {
+      'type': 'calls',
+      'items': calls
+          .map((e) => {
+                'name': (e['name'] ?? '').toString(),
+                'number': (e['number'] ?? '').toString(),
+                'type': e['type'],
+                'time': e['time'],
+              })
+          .toList(),
+    });
+  }
+
+  Future<void> _sendSmsCard(Msg m) async {
+    final card = Map.from(m.card!);
+    final ok = await Native.sendSms(card['number'].toString(), card['text'].toString());
+    card['state'] = ok ? 'sent' : 'failed';
+    chat.replace(m, Msg(false, m.text, ts: m.ts, card: card));
+    if (!ok) _say('The SMS didn\'t go out. Check SMS permission in Vibe settings → People, or your SIM balance.', error: true);
+  }
+
+  void _contactSheet(Person p) {
+    prefs.tap();
+    final c = VC.of(context);
+    Widget item(IconData i, String label, VoidCallback onTap) => ListTile(
+          leading: Icon(i, color: c.text),
+          title: Text(label, style: TextStyle(color: c.text, fontWeight: FontWeight.w500)),
+          onTap: onTap,
+        );
+    showModalBottomSheet(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          PersonAvatar(name: p.name, person: p, size: 72),
+          const SizedBox(height: 10),
+          Text(p.name, style: TextStyle(color: c.text, fontSize: 20, fontWeight: FontWeight.w800)),
+          Text(p.number, style: TextStyle(color: c.muted, fontSize: 14)),
+          const SizedBox(height: 8),
+          item(Icons.call_rounded, 'Call', () {
+            Navigator.pop(ctx);
+            _doPeople(PeopleCmd('call', name: p.name), p, '');
+          }),
+          item(Icons.chat_rounded, 'WhatsApp', () {
+            Navigator.pop(ctx);
+            Native.whatsapp(p.number, '');
+          }),
+          item(Icons.sms_rounded, 'SMS', () {
+            Navigator.pop(ctx);
+            Native.smsApp(p.number, '');
+          }),
+          item(Icons.copy_rounded, 'Copy number', () {
+            Navigator.pop(ctx);
+            Clipboard.setData(ClipboardData(text: p.number));
+          }),
+          const SizedBox(height: 8),
+        ]),
+      ),
+    );
+  }
+
+  /// Contact, contact choices, SMS confirmation and call history cards.
+  Widget _card(VC c, Msg m) {
+    final card = m.card!;
+    BoxDecoration box() =>
+        BoxDecoration(color: c.pane, borderRadius: BorderRadius.circular(10), border: Border.all(color: c.divider));
+    Widget personRow(Map d, {VoidCallback? onTap, Widget? trailing, String? sub}) {
+      final p = _personOf(d);
+      return InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: onTap ?? () => _contactSheet(p),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(10, 8, 8, 8),
+          child: Row(children: [
+            PersonAvatar(name: p.name.isEmpty ? p.number : p.name, person: p.id.isEmpty ? null : p, size: 36),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(p.name.isEmpty ? p.number : p.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(color: c.text, fontWeight: FontWeight.w600, fontSize: 15)),
+                Text(sub ?? p.number, style: TextStyle(color: c.faint, fontSize: 12)),
+              ]),
+            ),
+            if (trailing != null) trailing,
+          ]),
+        ),
+      );
+    }
+
+    Widget round(IconData i, Color bg, VoidCallback onTap) => Padding(
+          padding: const EdgeInsets.only(left: 6),
+          child: Material(
+            color: bg,
+            shape: const CircleBorder(),
+            child: InkWell(
+              customBorder: const CircleBorder(),
+              onTap: onTap,
+              child: Padding(padding: const EdgeInsets.all(8), child: Icon(i, color: Colors.white, size: 18)),
+            ),
+          ),
+        );
+
+    switch (card['type']) {
+      case 'contact':
+        final p = _personOf(card);
+        return Container(
+          margin: const EdgeInsets.only(top: 6),
+          constraints: const BoxConstraints(maxWidth: 340),
+          decoration: box(),
+          child: personRow(card,
+              trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                round(Icons.call_rounded, VC.green, () => _doPeople(PeopleCmd('call', name: p.name), p, '')),
+                round(Icons.chat_rounded, VC.blurple, () => _startReply(m)),
+              ])),
+        );
+      case 'people':
+        final items = List<Map>.from(card['items'] ?? const []);
+        return Container(
+          margin: const EdgeInsets.only(top: 6),
+          constraints: const BoxConstraints(maxWidth: 340),
+          decoration: box(),
+          child: Column(children: [
+            for (final d in items)
+              personRow(d, onTap: () {
+                final pc = _pending;
+                final p = _personOf(d);
+                if (pc != null) {
+                  _doPeople(pc, p, '');
+                } else {
+                  _contactSheet(p);
+                }
+              }),
+          ]),
+        );
+      case 'sms':
+        final state = card['state'];
+        return Container(
+          margin: const EdgeInsets.only(top: 6),
+          constraints: const BoxConstraints(maxWidth: 340),
+          decoration: box(),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            personRow(card, sub: 'SMS · ${card['number']}'),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+              child: Text(card['text'].toString(), style: TextStyle(color: c.text, fontSize: 15, height: 1.35)),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+              child: state == 'ready'
+                  ? Row(children: [
+                      Expanded(
+                        child: FilledButton.icon(
+                          style: FilledButton.styleFrom(backgroundColor: VC.green, minimumSize: const Size(0, 38)),
+                          icon: const Icon(Icons.send_rounded, size: 18),
+                          label: const Text('Send'),
+                          onPressed: () => _sendSmsCard(m),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: OutlinedButton(
+                          style: OutlinedButton.styleFrom(minimumSize: const Size(0, 38)),
+                          onPressed: () {
+                            final cc = Map.from(card)..['state'] = 'cancelled';
+                            chat.replace(m, Msg(false, m.text, ts: m.ts, card: cc));
+                          },
+                          child: Text('Cancel', style: TextStyle(color: c.text)),
+                        ),
+                      ),
+                    ])
+                  : Padding(
+                      padding: const EdgeInsets.fromLTRB(4, 0, 4, 2),
+                      child: Text(
+                        state == 'sent' ? '✓ Sent' : state == 'failed' ? '✕ Not sent' : 'Cancelled',
+                        style: TextStyle(
+                            color: state == 'sent' ? VC.green : state == 'failed' ? VC.red : c.faint,
+                            fontWeight: FontWeight.w700),
+                      ),
+                    ),
+            ),
+          ]),
+        );
+      case 'calls':
+        final items = List<Map>.from(card['items'] ?? const []);
+        return Container(
+          margin: const EdgeInsets.only(top: 6),
+          constraints: const BoxConstraints(maxWidth: 340),
+          decoration: box(),
+          child: Column(children: [
+            for (final d in items)
+              Builder(builder: (_) {
+                final type = d['type'];
+                final icon = type == 'outgoing'
+                    ? Icons.call_made_rounded
+                    : type == 'missed' || type == 'rejected'
+                        ? Icons.call_missed_rounded
+                        : Icons.call_received_rounded;
+                final col = type == 'missed' || type == 'rejected' ? VC.red : type == 'outgoing' ? c.muted : VC.green;
+                final number = d['number'].toString();
+                Person? known;
+                final digits = number.replaceAll(RegExp(r'\D'), '');
+                for (final p in People.all) {
+                  final pd = p.number.replaceAll(RegExp(r'\D'), '');
+                  if (digits.length >= 7 && pd.length >= 7 &&
+                      pd.substring(pd.length - 7) == digits.substring(digits.length - 7)) {
+                    known = p;
+                    break;
+                  }
+                }
+                final name = d['name'].toString().isNotEmpty ? d['name'].toString() : (known?.name ?? '');
+                final row = {
+                  'id': known?.id ?? '',
+                  'name': name,
+                  'number': number,
+                  'photo': known?.hasPhoto ?? false,
+                };
+                return personRow(row,
+                    sub: stamp(DateTime.fromMillisecondsSinceEpoch((d['time'] as num?)?.toInt() ?? 0)),
+                    trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                      Icon(icon, size: 18, color: col),
+                      round(Icons.call_rounded, VC.green, () => Native.call(number)),
+                    ]));
+              }),
+          ]),
+        );
+    }
+    return const SizedBox.shrink();
   }
 
   Future<void> _voice() async {
@@ -565,6 +893,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
       for (final p in m.apps)
         if (_byPkg(p) case final a?)
           AppCard(app: a, onOpen: () => _launch(a), onLongPress: () => showAppMenu(context, a, () => _launch(a))),
+      if (m.card != null) _card(c, m),
     ];
     Widget content = Column(crossAxisAlignment: CrossAxisAlignment.start, children: body);
 
@@ -578,7 +907,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
         avatar = Avatar(name: prefs.name, size: 40, dot: false);
         name = prefs.name;
       } else if (m.isNotif) {
-        avatar = _miniAvatar(c, m.pkg, 40);
+        // A chat app message from someone in your contacts: their photo with the app as a badge
+        final person = m.media ? null : People.fromTitle(m.title);
+        avatar = person != null
+            ? PersonAvatar(name: person.name, person: person, size: 40, badge: _miniAvatar(c, m.pkg, 18))
+            : _miniAvatar(c, m.pkg, 40);
         name = m.app ?? m.pkg!;
       } else {
         avatar = Builder(
@@ -836,6 +1169,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     _toBottom();
 
     if (to.media) return _musicReply(to, text);
+    if (to.card?['type'] == 'contact') {
+      // Replying to a contact card = message that person
+      final p = _personOf(to.card!);
+      await _doPeople(PeopleCmd('message', name: p.name, text: text), p, '');
+      return;
+    }
     if (!to.isNotif) {
       // Replying to Vibe: same as a normal message, Gemini sees what you replied to
       final r = Brain.handle(text, _apps);

@@ -32,6 +32,22 @@ class Native {
       await _c.invokeMethod<bool>('replyNotif', {'key': key, 'text': text}) ?? false;
   static Future<bool> mediaControl(String? pkg, String action) async =>
       await _c.invokeMethod<bool>('mediaControl', {'package': pkg, 'action': action}) ?? false;
+  // People
+  static Future<Map> peoplePerms() async => await _c.invokeMapMethod('peoplePerms') ?? {};
+  static Future<Map> requestPeople() async => await _c.invokeMapMethod('requestPeople') ?? {};
+  static Future<List<Map>> contacts() async => await _c.invokeListMethod<Map>('contacts') ?? [];
+  static Future<Uint8List?> contactPhoto(String id) => _c.invokeMethod<Uint8List>('contactPhoto', {'id': id});
+  static Future<List<Map>> callLog(int limit) async =>
+      await _c.invokeListMethod<Map>('callLog', {'limit': limit}) ?? [];
+  static Future<bool> call(String number) async =>
+      await _c.invokeMethod<bool>('call', {'number': number}) ?? false;
+  static Future<bool> sendSms(String number, String text) async =>
+      await _c.invokeMethod<bool>('sendSms', {'number': number, 'text': text}) ?? false;
+  static Future<bool> smsApp(String number, String text) async =>
+      await _c.invokeMethod<bool>('smsApp', {'number': number, 'text': text}) ?? false;
+  static Future<bool> whatsapp(String number, String text) async =>
+      await _c.invokeMethod<bool>('whatsapp', {'number': number, 'text': text}) ?? false;
+
   static Future<bool> openNotif(String key) async =>
       await _c.invokeMethod<bool>('openNotif', {'key': key}) ?? false;
 
@@ -95,6 +111,7 @@ class Prefs extends ChangeNotifier {
   bool showNotifs = true;
   bool aiNotifs = true;
   bool showMedia = true;
+  String messenger = 'whatsapp'; // default for "message X": whatsapp or sms
   Set<String> muted = {};
   String geminiModel = '';
   Set<String> hidden = {};
@@ -110,6 +127,7 @@ class Prefs extends ChangeNotifier {
     showNotifs = _p.getBool('showNotifs') ?? true;
     aiNotifs = _p.getBool('aiNotifs') ?? true;
     showMedia = _p.getBool('showMedia') ?? true;
+    messenger = _p.getString('messenger') ?? 'whatsapp';
     muted = (_p.getStringList('muted') ?? []).toSet();
     geminiModel = _p.getString('geminiModel') ?? '';
     hidden = (_p.getStringList('hidden') ?? []).toSet();
@@ -131,6 +149,7 @@ class Prefs extends ChangeNotifier {
   void setGeminiModel(String v) { geminiModel = v.trim(); _p.setString('geminiModel', geminiModel); notifyListeners(); }
 
   void setShowNotifs(bool v) { showNotifs = v; _p.setBool('showNotifs', v); notifyListeners(); }
+  void setMessenger(String v) { messenger = v; _p.setString('messenger', v); notifyListeners(); }
   void setShowMedia(bool v) { showMedia = v; _p.setBool('showMedia', v); notifyListeners(); }
   void setAiNotifs(bool v) { aiNotifs = v; _p.setBool('aiNotifs', v); notifyListeners(); }
   void toggleMuted(String pkg) {
@@ -150,6 +169,8 @@ class Prefs extends ChangeNotifier {
     _p.setString('lastUsed', jsonEncode(lastUsed));
     notifyListeners();
   }
+
+  void refresh() => notifyListeners();
 
   void tap() { if (haptics) HapticFeedback.selectionClick(); }
   void heavy() { if (haptics) HapticFeedback.mediumImpact(); }

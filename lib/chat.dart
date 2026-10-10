@@ -22,6 +22,8 @@ class Msg {
   final String? quoteName; // who wrote it (app, sender, "Vibe" or your name)
   final String? quotePkg; // its avatar: an app package, 'vibe' or 'me'
   final bool media; // music update from a player app
+  /// Rich card under a Vibe reply: {type: contact|sms|calls, ...}
+  final Map? card;
 
   Msg(this.me, this.text,
       {int? ts,
@@ -36,7 +38,8 @@ class Msg {
       this.quote,
       this.quoteName,
       this.quotePkg,
-      this.media = false})
+      this.media = false,
+      this.card})
       : ts = ts ?? DateTime.now().millisecondsSinceEpoch;
 
   bool get isNotif => pkg != null;
@@ -58,6 +61,7 @@ class Msg {
         if (quoteName != null) 'qn': quoteName,
         if (quotePkg != null) 'qp': quotePkg,
         if (media) 'md': true,
+        if (card != null) 'x': card,
       };
   static Msg fromJson(Map j) => Msg(j['m'] == true, j['t'] ?? '',
       ts: j['s'] ?? 0,
@@ -72,7 +76,8 @@ class Msg {
       quote: j['q'],
       quoteName: j['qn'],
       quotePkg: j['qp'],
-      media: j['md'] == true);
+      media: j['md'] == true,
+      card: j['x'] is Map ? Map.from(j['x']) : null);
 }
 
 /// Chat history, kept on the phone (last 500 lines).
@@ -89,6 +94,15 @@ class ChatStore extends ChangeNotifier {
   void add(Msg m) {
     msgs.add(m);
     if (msgs.length > 500) msgs = msgs.sublist(msgs.length - 500);
+    prefs.sp.setString('chat', jsonEncode(msgs.map((e) => e.toJson()).toList()));
+    notifyListeners();
+  }
+
+  /// Swap one line for an updated copy (e.g. an SMS card after sending).
+  void replace(Msg old, Msg m) {
+    final i = msgs.lastIndexOf(old);
+    if (i < 0) return;
+    msgs[i] = m;
     prefs.sp.setString('chat', jsonEncode(msgs.map((e) => e.toJson()).toList()));
     notifyListeners();
   }
@@ -134,6 +148,7 @@ class Brain {
       '• "launcher settings"\n'
       '• "clear chat"\n'
       '• "pause", "play", "next", "previous" for music\n'
+      '• "call mom", "message Ravi I\'ll be late", "whatsapp Priya hi", "who called me?"\n'
       '• Long-press my avatar for your recent apps\n'
       'Notifications show up here: tap Reply to answer, long-press to mute an app.\n'
       'With a Gemini key (launcher settings) you can also just talk to me: ask questions, '
