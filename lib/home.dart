@@ -14,6 +14,7 @@ import 'search.dart';
 import 'privacy.dart';
 import 'backup.dart';
 import 'day.dart';
+import 'dialer.dart';
 import 'sched.dart';
 import 'profile_sheet.dart';
 import 'settings_page.dart';
@@ -227,6 +228,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
       _say(mem);
       return;
     }
+    if (await _dialerCommands(text)) return;
     if (await _telegramCommands(text)) return;
     if (await _selfCommands(text)) return;
     if (await _appCommands(text)) return;
@@ -2049,6 +2051,58 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     }
   }
 
+  // ---------- Dial pad ----------
+  void _openDialer([String number = '']) {
+    _focus.unfocus();
+    navKey.currentState?.push(PageRouteBuilder(
+      transitionDuration: const Duration(milliseconds: 260),
+      pageBuilder: (_, __, ___) => DialerPage(initial: number),
+      transitionsBuilder: (_, a, __, child) => SlideTransition(
+        position: Tween(begin: const Offset(0, 0.08), end: Offset.zero).animate(CurvedAnimation(parent: a, curve: Curves.easeOutCubic)),
+        child: FadeTransition(opacity: a, child: child),
+      ),
+    ));
+  }
+
+  /// "dialer", "keypad", "dial 98765 43210", or just a phone number on its own.
+  Future<bool> _dialerCommands(String text) async {
+    final t = text.trim();
+    final low = Brain.norm(t);
+    if (RegExp(r'^(open |show )?(the )?(dialer|dial ?pad|key ?pad|phone ?pad|dial|numpad|number pad)$').hasMatch(low)) {
+      _openDialer();
+      return true;
+    }
+    final dial = RegExp(r'^dial\s+([+\d][\d\s\-()*#+]*)$', caseSensitive: false).firstMatch(t);
+    if (dial != null) {
+      _openDialer(dial.group(1)!.replaceAll(RegExp(r'[\s\-()]'), ''));
+      return true;
+    }
+    // A bare number: offer call / message / save
+    if (RegExp(r'^[+]?[\d\s\-()]{7,}$').hasMatch(t) && t.replaceAll(RegExp(r'\D'), '').length >= 7) {
+      final n = (t.startsWith('+') ? '+' : '') + t.replaceAll(RegExp(r'\D'), '');
+      final p = _personForNumber(n);
+      await Future.delayed(const Duration(milliseconds: 200));
+      _say(p.id.isEmpty ? n : '${p.name} · $n', card: {
+        'type': 'ask',
+        'state': 'ask',
+        'number': n,
+        'buttons': [
+          {'label': 'Call', 'do': 'numcall', 'primary': true},
+          {'label': 'Message', 'do': 'nummsg'},
+          if (p.id.isEmpty) {'label': 'Save contact', 'do': 'numsave'},
+          {'label': 'Dial pad', 'do': 'numpad'},
+        ],
+      });
+      return true;
+    }
+    // USSD / phone codes typed in chat: *123#, *#06#
+    if (RegExp(r'^\*[\d*#]+#$').hasMatch(t)) {
+      t.startsWith('*#') ? await Native.dialPad(t) : await Native.call(t);
+      return true;
+    }
+    return false;
+  }
+
   // ---------- Telegram inside Vibe ----------
   /// A Telegram message arrives: it shows up like any app message, but replies go straight to Telegram.
   void _onTelegram(Map tm) {
@@ -2573,10 +2627,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
   }
 
   void _setCard(Msg m, Map card, {String? text}) {
-    final j = m.toJson();
+    // [m] may already have been swapped for an updated copy: find the current one
+    final cur = chat.msgs.lastWhere((x) => identical(x, m) || (x.ts == m.ts && x.me == m.me && x.text == m.text),
+        orElse: () => m);
+    final j = cur.toJson();
     j['x'] = card;
     if (text != null) j['t'] = text;
-    chat.replace(m, Msg.fromJson(j));
+    chat.replace(cur, Msg.fromJson(j));
   }
 
   Msg? _msgWithCard(String id) {
@@ -2587,17 +2644,28 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
   }
 
   void _onAsk(Msg m, String action) {
-    _setCard(m, Map.from(m.card!)..['state'] = action);
+    // Buttons you can use again and again (call, open…) stay active; one-time choices lock
+    const repeat = {'numcall', 'nummsg', 'numsave', 'numpad', 'tgfileopen', 'tgdownloads', 'tgopen', 'tgstart'};
+    if (!repeat.contains(action)) _setCard(m, Map.from(m.card!)..['state'] = action);
     switch (action) {
       case 'nano_models':
         _showModels();
       case 'cancel':
         _say('Okay. Ask me "download offline model" anytime.');
+      case 'numcall' || 'nummsg' || 'numsave' || 'numpad':
+        final n = '${m.card!['number']}';
+        if (action == 'numcall') {
+          Native.call(n);
+        } else if (action == 'nummsg') {
+          _doPeople(PeopleCmd('message', name: n), _personForNumber(n), '');
+        } else if (action == 'numsave') {
+          Native.addContact(n);
+        } else {
+          _openDialer(n);
+        }
       case 'tgfileopen':
-        _setCard(m, Map.from(m.card!)..['state'] = 'ask');
         Native.openFile('${m.card!['uri']}', '${m.card!['mime']}');
       case 'tgdownloads':
-        _setCard(m, Map.from(m.card!)..['state'] = 'ask');
         _openTelegramChats(tab: 2);
       case 'tgjoin':
         _tgJoinFromCard(m);
@@ -2606,7 +2674,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
       case 'tgsend':
         _tgSendFromCard(m);
       case 'tgopen':
-        _setCard(m, Map.from(m.card!)..['state'] = 'ask');
         _openTelegramChat((m.card!['chat'] as num).toInt());
       case 'tglogin':
         _openTelegramLogin();
@@ -3669,6 +3736,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
                             _closeDrawer();
                             _playStore('');
                           },
+                          onDialer: () {
+                            _closeDrawer();
+                            _openDialer();
+                          },
                           onTelegram: Telegram.i.configured
                               ? () {
                                   _closeDrawer();
@@ -4508,9 +4579,10 @@ class _AppDrawer extends StatefulWidget {
   final String status;
   final void Function(AppEntry) onLaunch;
   final VoidCallback onSearch, onPlayStore, onMissed, onSettings;
-  final VoidCallback? onTelegram;
+  final VoidCallback? onTelegram, onDialer;
   const _AppDrawer({
     this.onTelegram,
+    this.onDialer,
     required this.apps,
     required this.loaded,
     required this.status,
@@ -4633,6 +4705,8 @@ class _AppDrawerState extends State<_AppDrawer> {
                               final top = [
                                 if (q.isEmpty)
                                   _navTile(c, Icons.manage_search_rounded, 'Search everything', widget.onSearch),
+                                if (q.isEmpty && widget.onDialer != null)
+                                  _navTile(c, Icons.dialpad_rounded, 'Dialer', widget.onDialer!),
                                 if (q.isEmpty && widget.onTelegram != null)
                                   _navTile(c, Icons.send_rounded, 'Telegram chats', widget.onTelegram!),
                                 _section(c, '$title — ${list.length}', widget.onPlayStore),

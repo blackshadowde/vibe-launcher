@@ -8,7 +8,7 @@ import 'theme.dart';
 
 /// One installed app. In the UI it's a "user" in the DM list.
 /// Shown in settings and when you ask "what version is this".
-const vibeVersion = '0.22.0';
+const vibeVersion = '0.23.0';
 
 class AppEntry {
   final String label, pkg;
@@ -127,6 +127,10 @@ class Native {
   static Future<Uint8List?> contactPhoto(String id) => _c.invokeMethod<Uint8List>('contactPhoto', {'id': id});
   static Future<List<Map>> callLog(int limit) async =>
       await _c.invokeListMethod<Map>('callLog', {'limit': limit}) ?? [];
+  static Future<bool> dialPad(String number) async =>
+      await _c.invokeMethod<bool>('dialPad', {'number': number}) ?? false;
+  static Future<bool> addContact(String number) async =>
+      await _c.invokeMethod<bool>('addContact', {'number': number}) ?? false;
   static Future<bool> call(String number) async =>
       await _c.invokeMethod<bool>('call', {'number': number}) ?? false;
   static Future<bool> sendSms(String number, String text) async =>
