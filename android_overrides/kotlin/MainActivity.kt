@@ -345,7 +345,7 @@ class VibeNotifService : NotificationListenerService() {
         mediaTimers[pkg]?.let { main.removeCallbacks(it) }
         val r = Runnable { try { announce(c) } catch (_: Exception) {} }
         mediaTimers[pkg] = r
-        main.postDelayed(r, 800)
+        main.postDelayed(r, 450)
     }
 
     private fun announce(c: MediaController) {
