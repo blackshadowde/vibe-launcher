@@ -46,6 +46,8 @@ jobs:
           dependencies {
               implementation("com.google.mlkit:genai-prompt:1.0.0-beta4")
               implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+              implementation("androidx.media3:media3-exoplayer:1.4.1")
+              implementation("androidx.media3:media3-session:1.4.1")
           }
 
           // 64-bit ARM phones only (all modern phones): keeps the Telegram library from tripling the APK size
