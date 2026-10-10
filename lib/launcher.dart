@@ -189,6 +189,16 @@ class Prefs extends ChangeNotifier {
   String name = 'You';
   /// API keys live in Android's encrypted Keystore storage, not in plain settings.
   static const _vault = FlutterSecureStorage();
+
+  /// Reads one key from the vault, never waiting more than 3 seconds (right after an update
+  /// Android's keystore can be slow or broken; the home screen must still appear).
+  static Future<String> _secret(String k) async {
+    try {
+      return await _vault.read(key: k).timeout(const Duration(seconds: 3)) ?? '';
+    } catch (_) {
+      return '';
+    }
+  }
   String geminiKey = '';
   String routerKey = ''; // OpenRouter, the backup when Gemini is busy
   String groqKey = ''; // Groq (free): OpenAI's open gpt-oss model, very fast
@@ -234,9 +244,9 @@ class Prefs extends ChangeNotifier {
     name = _p.getString('name') ?? 'You';
     // Keys: read from the encrypted vault; move any old plain-text key into it
     try {
-      geminiKey = await _vault.read(key: 'geminiKey') ?? '';
-      routerKey = await _vault.read(key: 'routerKey') ?? '';
-      groqKey = await _vault.read(key: 'groqKey') ?? '';
+      geminiKey = await _secret('geminiKey');
+      routerKey = await _secret('routerKey');
+      groqKey = await _secret('groqKey');
       final old = _p.getString('geminiKey');
       if (old != null) {
         if (geminiKey.isEmpty && old.isNotEmpty) {
@@ -270,10 +280,10 @@ class Prefs extends ChangeNotifier {
     gmailUser = _p.getString('gmailUser') ?? '';
     cfAccount = _p.getString('cfAccount') ?? '';
     try {
-      cfToken = await _vault.read(key: 'cfToken') ?? '';
+      cfToken = await _secret('cfToken');
     } catch (_) {}
     try {
-      gmailPass = await _vault.read(key: 'gmailPass') ?? '';
+      gmailPass = await _secret('gmailPass');
     } catch (_) {}
     queue = (_p.getStringList('queue') ?? []).map(int.parse).toList();
     briefHour = _p.getInt('briefHour') ?? 7;

@@ -26,7 +26,10 @@ Future<void> main() async {
     return true;
   };
   ErrorWidget.builder = (d) => const SizedBox.shrink();
-  await prefs.load();
+  // Never let a slow start keep the home screen white
+  try {
+    await prefs.load().timeout(const Duration(seconds: 8));
+  } catch (_) {}
   memory.load();
   Native.init();
   SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);

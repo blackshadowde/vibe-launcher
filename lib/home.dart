@@ -2707,12 +2707,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
 
     // Tap opens a notification; long-press shows options (music: playback controls)
     if (m.isNotif) {
+      // Keep the finished row in its own variable: the builder runs later, and by then `row`
+      // would point at this Builder itself (it then contained itself forever: stack overflow).
+      final inner = row;
       row = Builder(
         builder: (ctx) => GestureDetector(
           behavior: HitTestBehavior.opaque,
           onTap: () => _openNotif(m),
           onLongPress: () => m.media ? _mediaPane(ctx, m) : _notifMenu(m),
-          child: row,
+          child: inner,
         ),
       );
     } else if (m.talk) {
