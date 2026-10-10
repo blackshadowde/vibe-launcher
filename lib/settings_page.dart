@@ -37,7 +37,46 @@ class SettingsPage extends StatelessWidget {
               subtitle: Text('${prefs.hidden.length} hidden', style: TextStyle(color: c.faint)),
               trailing: Icon(Icons.chevron_right_rounded, color: c.faint),
               onTap: () => Navigator.push(
-                  context, MaterialPageRoute(builder: (_) => const _HiddenAppsPage())),
+                  context, MaterialPageRoute(builder: (_) => const _AppTogglePage(muted: false))),
+            ),
+          ]),
+          _section(c, 'NOTIFICATIONS'),
+          _group(c, [
+            FutureBuilder<bool>(
+              future: Native.notifAccess(),
+              builder: (_, snap) {
+                final ok = snap.data == true;
+                return ListTile(
+                  leading: Icon(Icons.notifications_active_outlined, color: c.muted),
+                  title: Text('Notification access', style: TextStyle(color: c.text)),
+                  subtitle: Text(ok ? 'Allowed' : 'Not allowed: tap to allow',
+                      style: TextStyle(color: ok ? VC.green : VC.yellow)),
+                  trailing: Icon(Icons.chevron_right_rounded, color: c.faint),
+                  onTap: Native.openNotifAccess,
+                );
+              },
+            ),
+            SwitchListTile(
+              title: Text('Show notifications in chat', style: TextStyle(color: c.text)),
+              subtitle: Text('Each app\'s notifications appear as its messages',
+                  style: TextStyle(color: c.faint)),
+              value: prefs.showNotifs,
+              onChanged: prefs.setShowNotifs,
+            ),
+            SwitchListTile(
+              title: Text('Let Vibe AI read them', style: TextStyle(color: c.text)),
+              subtitle: Text('For "what did I miss?" and replies. Sends recent notifications to Gemini',
+                  style: TextStyle(color: c.faint)),
+              value: prefs.aiNotifs,
+              onChanged: prefs.setAiNotifs,
+            ),
+            ListTile(
+              leading: Icon(Icons.notifications_off_outlined, color: c.muted),
+              title: Text('Muted apps', style: TextStyle(color: c.text)),
+              subtitle: Text('${prefs.muted.length} muted', style: TextStyle(color: c.faint)),
+              trailing: Icon(Icons.chevron_right_rounded, color: c.faint),
+              onTap: () => Navigator.push(
+                  context, MaterialPageRoute(builder: (_) => const _AppTogglePage(muted: true))),
             ),
           ]),
           _section(c, 'VIBE AI (GEMINI)'),
@@ -94,7 +133,7 @@ class SettingsPage extends StatelessWidget {
             ListTile(
               leading: Icon(Icons.info_outline_rounded, color: c.muted),
               title: Text('Vibe Launcher', style: TextStyle(color: c.text)),
-              subtitle: Text('Version 0.3.0', style: TextStyle(color: c.faint)),
+              subtitle: Text('Version 0.4.0', style: TextStyle(color: c.faint)),
             ),
           ]),
         ]),
@@ -163,13 +202,15 @@ class SettingsPage extends StatelessWidget {
       );
 }
 
-class _HiddenAppsPage extends StatefulWidget {
-  const _HiddenAppsPage();
+/// Hidden apps or muted apps: one switch per app.
+class _AppTogglePage extends StatefulWidget {
+  final bool muted;
+  const _AppTogglePage({required this.muted});
   @override
-  State<_HiddenAppsPage> createState() => _HiddenAppsPageState();
+  State<_AppTogglePage> createState() => _AppTogglePageState();
 }
 
-class _HiddenAppsPageState extends State<_HiddenAppsPage> {
+class _AppTogglePageState extends State<_AppTogglePage> {
   List<AppEntry> _apps = [];
 
   @override
@@ -188,7 +229,7 @@ class _HiddenAppsPageState extends State<_HiddenAppsPage> {
       listenable: prefs,
       builder: (context, _) => Scaffold(
         backgroundColor: c.chat,
-        appBar: AppBar(backgroundColor: c.chat, title: const Text('Hidden apps')),
+        appBar: AppBar(backgroundColor: c.chat, title: Text(widget.muted ? 'Muted apps' : 'Hidden apps')),
         body: ListView.builder(
           itemCount: _apps.length,
           itemBuilder: (_, i) {
@@ -196,8 +237,8 @@ class _HiddenAppsPageState extends State<_HiddenAppsPage> {
             return SwitchListTile(
               secondary: ClipOval(child: Image.memory(a.icon, width: 36, height: 36)),
               title: Text(a.label, style: TextStyle(color: c.text)),
-              value: prefs.hidden.contains(a.pkg),
-              onChanged: (_) => prefs.toggleHidden(a.pkg),
+              value: widget.muted ? prefs.muted.contains(a.pkg) : prefs.hidden.contains(a.pkg),
+              onChanged: (_) => widget.muted ? prefs.toggleMuted(a.pkg) : prefs.toggleHidden(a.pkg),
             );
           },
         ),

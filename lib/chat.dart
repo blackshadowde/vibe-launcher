@@ -3,7 +3,7 @@ import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'launcher.dart';
 
-/// One line in the Vibe chat.
+/// One line in the Vibe chat: from you, from Vibe, or an app notification.
 class Msg {
   final bool me;
   final String text;
@@ -11,8 +11,30 @@ class Msg {
   final List<String> apps; // app cards shown under a Vibe reply
   final List<Map> links; // web sources: {t: title, u: url}
   final bool error;
-  Msg(this.me, this.text, {int? ts, this.apps = const [], this.links = const [], this.error = false})
+  // Notifications
+  final String? pkg; // set = this line is a notification from that app
+  final String? app; // app name
+  final String? title; // e.g. sender name
+  final String? nkey; // Android notification key, for reply/open
+  final bool canReply;
+  // Your reply to a notification: "Ravi · WhatsApp"
+  final String? quote;
+
+  Msg(this.me, this.text,
+      {int? ts,
+      this.apps = const [],
+      this.links = const [],
+      this.error = false,
+      this.pkg,
+      this.app,
+      this.title,
+      this.nkey,
+      this.canReply = false,
+      this.quote})
       : ts = ts ?? DateTime.now().millisecondsSinceEpoch;
+
+  bool get isNotif => pkg != null;
+  String get sender => me ? 'me' : (pkg ?? 'vibe');
 
   Map toJson() => {
         'm': me,
@@ -21,15 +43,27 @@ class Msg {
         if (apps.isNotEmpty) 'a': apps,
         if (links.isNotEmpty) 'l': links,
         if (error) 'e': true,
+        if (pkg != null) 'p': pkg,
+        if (app != null) 'n': app,
+        if (title != null) 'h': title,
+        if (nkey != null) 'k': nkey,
+        if (canReply) 'r': true,
+        if (quote != null) 'q': quote,
       };
   static Msg fromJson(Map j) => Msg(j['m'] == true, j['t'] ?? '',
       ts: j['s'] ?? 0,
       apps: List<String>.from(j['a'] ?? const []),
       links: List<Map>.from(j['l'] ?? const []),
-      error: j['e'] == true);
+      error: j['e'] == true,
+      pkg: j['p'],
+      app: j['n'],
+      title: j['h'],
+      nkey: j['k'],
+      canReply: j['r'] == true,
+      quote: j['q']);
 }
 
-/// Chat history, kept on the phone (last 300 lines).
+/// Chat history, kept on the phone (last 500 lines).
 class ChatStore extends ChangeNotifier {
   List<Msg> msgs = [];
 
@@ -42,7 +76,7 @@ class ChatStore extends ChangeNotifier {
 
   void add(Msg m) {
     msgs.add(m);
-    if (msgs.length > 300) msgs = msgs.sublist(msgs.length - 300);
+    if (msgs.length > 500) msgs = msgs.sublist(msgs.length - 500);
     prefs.sp.setString('chat', jsonEncode(msgs.map((e) => e.toJson()).toList()));
     notifyListeners();
   }
@@ -78,8 +112,10 @@ class Brain {
       '• "launcher settings"\n'
       '• "clear chat"\n'
       '• Long-press my avatar for your recent apps\n'
+      'Notifications show up here: tap Reply to answer, long-press to mute an app.\n'
       'With a Gemini key (launcher settings) you can also just talk to me: ask questions, '
-      'search Google, play music, set alarms and timers.';
+      'search Google, play music, set alarms and timers, "what did I miss?", '
+      '"reply to Ravi I\'m on my way".';
 
   static String norm(String s) => s
       .toLowerCase()

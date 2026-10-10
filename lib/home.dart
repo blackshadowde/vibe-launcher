@@ -25,12 +25,16 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   bool _isDefault = true;
   bool _loaded = false;
   bool _thinking = false;
+  bool _notifAccess = true;
+  Msg? _replyTo;
+  List<Msg> _askedNotifs = [];
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     Native.onHomePressed = _goHome;
+    Native.onNotification = _onNotif;
     chat.load();
     if (chat.msgs.isEmpty) {
       chat.add(Msg(false,
@@ -58,12 +62,17 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Future<void> _refresh() async {
     final list = await Native.apps();
     final def = await Native.isDefault();
+    final access = await Native.notifAccess();
     if (!mounted) return;
     setState(() {
       _apps = list;
       _isDefault = def;
+      _notifAccess = access;
       _loaded = true;
     });
+    for (final n in await Native.drainNotifs()) {
+      _onNotif(n);
+    }
   }
 
   void _goHome() {
@@ -106,6 +115,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     if (text.isEmpty) return;
     _input.clear();
     prefs.tap();
+    if (_replyTo != null) {
+      await _sendReply(_replyTo!, text);
+      return;
+    }
     chat.add(Msg(true, text));
     _toBottom();
 
@@ -164,7 +177,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     setState(() => _thinking = true);
     _toBottom();
     try {
-      final res = await Gemini.ask(chat.msgs, _apps);
+      _askedNotifs = _ctxNotifs;
+      final res = await Gemini.ask(chat.msgs, _apps, _askedNotifs);
       if (!mounted) return;
       if (res.error != null) {
         _say(res.error!, error: true);
@@ -251,12 +265,36 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         final mins = secs ~/ 60, rem = secs % 60;
         final len = mins == 0 ? '$rem sec' : rem == 0 ? '$mins min' : '$mins min $rem sec';
         _say(ok ? say('Timer set for $len.') : 'Your clock app didn\'t accept the timer.');
+      case 'reply_notification':
+        final n = _notifById(str('id'));
+        final text = str('text');
+        if (n == null || text.isEmpty) {
+          _say('I couldn\'t find that conversation.');
+          return;
+        }
+        if (preface.isNotEmpty) _say(preface);
+        await _sendReply(n, text);
+      case 'open_notification':
+        final n = _notifById(str('id'));
+        if (n == null) {
+          _say('I couldn\'t find that notification.');
+          return;
+        }
+        _say(say('Opening it…'));
+        await _pause();
+        _openNotif(n);
       case 'clear_chat':
         chat.clear();
         _say('Chat cleared.');
       default:
         _say(preface.isEmpty ? 'I can\'t do that yet.' : preface);
     }
+  }
+
+  Msg? _notifById(String id) {
+    final i = int.tryParse(id.replaceAll(RegExp(r'[^0-9]'), ''));
+    if (i == null || i < 1 || i > _askedNotifs.length) return null;
+    return _askedNotifs[i - 1];
   }
 
   Future<void> _voice() async {
@@ -296,6 +334,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               child: Column(children: [
                 _header(c),
                 if (!_isDefault && _loaded) _defaultBanner(),
+                if (_isDefault && !_notifAccess && _loaded && prefs.showNotifs) _notifBanner(),
                 Expanded(child: _timeline(c)),
                 _inputBar(c),
               ]),
@@ -356,6 +395,25 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         ]),
       );
 
+  Widget _notifBanner() => Container(
+        margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+        padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
+        decoration: BoxDecoration(color: VC.blurple, borderRadius: BorderRadius.circular(8)),
+        child: Row(children: [
+          const Expanded(
+            child: Text('Get your notifications here as messages',
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+          ),
+          TextButton(
+            style: TextButton.styleFrom(
+                backgroundColor: Colors.white, foregroundColor: VC.blurple,
+                minimumSize: const Size(0, 32)),
+            onPressed: Native.openNotifAccess,
+            child: const Text('Allow'),
+          ),
+        ]),
+      );
+
   Widget _defaultBanner() => Container(
         margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
         padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
@@ -394,7 +452,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           final t = DateTime.fromMillisecondsSinceEpoch(m.ts);
           final ot = older == null ? null : DateTime.fromMillisecondsSinceEpoch(older.ts);
           final newDay = ot == null || !sameDay(ot, t);
-          final head = newDay || older!.me != m.me || m.ts - older.ts > 5 * 60 * 1000;
+          final head = newDay || older!.sender != m.sender || m.ts - older.ts > 5 * 60 * 1000;
           return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             if (newDay) _dayDivider(c, t),
             _message(c, m, t, head),
@@ -430,39 +488,82 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   Widget _message(VC c, Msg m, DateTime t, bool head) {
     final body = <Widget>[
-      if (m.text.isNotEmpty) richText(m.text, c, error: m.error),
+      if (m.quote != null)
+        Padding(
+          padding: const EdgeInsets.only(bottom: 2),
+          child: Row(children: [
+            Icon(Icons.reply_rounded, size: 14, color: c.faint),
+            const SizedBox(width: 4),
+            Flexible(
+              child: Text('Replied to ${m.quote}',
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(color: c.faint, fontSize: 12, fontWeight: FontWeight.w600)),
+            ),
+          ]),
+        ),
+      if (m.isNotif && (m.title ?? '').isNotEmpty)
+        Text(m.title!, style: TextStyle(color: c.text, fontSize: 15, fontWeight: FontWeight.w700)),
+      if (m.text.isNotEmpty)
+        m.isNotif
+            ? Text(m.text, style: TextStyle(color: c.muted, fontSize: 15, height: 1.35))
+            : richText(m.text, c, error: m.error),
       if (m.links.isNotEmpty) linkChips(m.links, c),
       for (final p in m.apps)
         if (_byPkg(p) case final a?)
           AppCard(app: a, onOpen: () => _launch(a), onLongPress: () => showAppMenu(context, a, () => _launch(a))),
+      if (m.isNotif) _notifActions(c, m),
     ];
-    if (!head) {
-      return Padding(
-        padding: const EdgeInsets.fromLTRB(68, 2, 16, 2),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: body),
+    Widget content = Column(crossAxisAlignment: CrossAxisAlignment.start, children: body);
+    if (m.isNotif) {
+      content = GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () => _openNotif(m),
+        onLongPress: () => _notifMenu(m),
+        child: content,
       );
     }
+    if (!head) {
+      return Padding(padding: const EdgeInsets.fromLTRB(68, 4, 16, 2), child: content);
+    }
+
+    Widget avatar;
+    String name;
+    if (m.me) {
+      avatar = Avatar(name: prefs.name, size: 40, dot: false);
+      name = prefs.name;
+    } else if (m.isNotif) {
+      final a = _byPkg(m.pkg!);
+      avatar = a != null
+          ? appIcon(a, 40)
+          : CircleAvatar(
+              radius: 20,
+              backgroundColor: c.pane,
+              child: Icon(Icons.notifications_rounded, color: c.muted, size: 22));
+      name = m.app ?? m.pkg!;
+    } else {
+      avatar = Builder(
+        builder: (ctx) => GestureDetector(
+          onLongPress: () => _quickApps(ctx),
+          child: const BotAvatar(size: 40),
+        ),
+      );
+      name = 'Vibe';
+    }
+
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 2),
       child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        m.me
-            ? Avatar(name: prefs.name, size: 40, dot: false)
-            : Builder(
-                builder: (ctx) => GestureDetector(
-                  onLongPress: () => _quickApps(ctx),
-                  child: const BotAvatar(size: 40),
-                ),
-              ),
+        avatar,
         const SizedBox(width: 12),
         Expanded(
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Row(children: [
               Flexible(
-                child: Text(m.me ? prefs.name : 'Vibe',
+                child: Text(name,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(color: c.text, fontWeight: FontWeight.w700, fontSize: 16)),
               ),
-              if (!m.me) ...[
+              if (!m.me && !m.isNotif) ...[
                 const SizedBox(width: 6),
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
@@ -475,11 +576,109 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               Text(stamp(t), style: TextStyle(color: c.faint, fontSize: 12)),
             ]),
             const SizedBox(height: 2),
-            ...body,
+            content,
           ]),
         ),
       ]),
     );
+  }
+
+  Widget _notifActions(VC c, Msg m) {
+    Widget btn(IconData i, String label, VoidCallback onTap) => InkWell(
+          borderRadius: BorderRadius.circular(6),
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(2, 6, 10, 2),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              Icon(i, size: 16, color: VC.blurple),
+              const SizedBox(width: 4),
+              Text(label, style: const TextStyle(color: VC.blurple, fontSize: 13, fontWeight: FontWeight.w700)),
+            ]),
+          ),
+        );
+    return Row(children: [
+      if (m.canReply) btn(Icons.reply_rounded, 'Reply', () => _startReply(m)),
+      btn(Icons.open_in_new_rounded, 'Open', () => _openNotif(m)),
+    ]);
+  }
+
+  // ---------- notifications ----------
+  void _onNotif(Map n) {
+    final pkg = n['pkg']?.toString();
+    if (pkg == null || !prefs.showNotifs || prefs.muted.contains(pkg)) return;
+    final atBottom = !_scroll.hasClients || _scroll.offset < 80;
+    chat.add(Msg(false, (n['text'] ?? '').toString(),
+        ts: (n['time'] as num?)?.toInt(),
+        pkg: pkg,
+        app: n['app']?.toString(),
+        title: n['title']?.toString(),
+        nkey: n['key']?.toString(),
+        canReply: n['canReply'] == true));
+    if (atBottom) _toBottom();
+  }
+
+  Future<void> _openNotif(Msg m) async {
+    prefs.tap();
+    final ok = m.nkey != null && await Native.openNotif(m.nkey!);
+    if (!ok) {
+      final a = _byPkg(m.pkg!);
+      if (a != null) _launch(a);
+    }
+  }
+
+  void _startReply(Msg m) {
+    prefs.tap();
+    setState(() => _replyTo = m);
+    _focus.requestFocus();
+  }
+
+  void _notifMenu(Msg m) {
+    prefs.heavy();
+    final c = VC.of(context);
+    Widget item(IconData icon, String label, VoidCallback onTap, {bool danger = false}) => ListTile(
+          leading: Icon(icon, color: danger ? VC.red : c.text),
+          title: Text(label, style: TextStyle(color: danger ? VC.red : c.text, fontWeight: FontWeight.w500)),
+          onTap: onTap,
+        );
+    showModalBottomSheet(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          if (m.canReply) item(Icons.reply_rounded, 'Reply', () { Navigator.pop(ctx); _startReply(m); }),
+          item(Icons.open_in_new_rounded, 'Open', () { Navigator.pop(ctx); _openNotif(m); }),
+          item(Icons.copy_rounded, 'Copy text', () {
+            Navigator.pop(ctx);
+            Clipboard.setData(ClipboardData(text: [m.title, m.text].whereType<String>().join('\n')));
+          }),
+          item(Icons.notifications_off_outlined, 'Mute ${m.app ?? 'this app'} in Vibe', () {
+            Navigator.pop(ctx);
+            prefs.toggleMuted(m.pkg!);
+            _say('Muted ${m.app ?? m.pkg}. Its notifications won\'t show here. Unmute in launcher settings.');
+          }, danger: true),
+          const SizedBox(height: 8),
+        ]),
+      ),
+    );
+  }
+
+  Future<void> _sendReply(Msg to, String text) async {
+    setState(() => _replyTo = null);
+    final who = [to.title, to.app].where((e) => (e ?? '').isNotEmpty).join(' · ');
+    chat.add(Msg(true, text, quote: who));
+    _toBottom();
+    final ok = to.nkey != null && await Native.replyNotif(to.nkey!, text);
+    if (!ok) {
+      _say('I couldn\'t send that. The notification may be gone. Open the chat instead?',
+          apps: [if (to.pkg != null && _byPkg(to.pkg!) != null) to.pkg!], error: true);
+    }
+  }
+
+  /// Newest-first notifications Gemini may see (last 24 h, max 25).
+  List<Msg> get _ctxNotifs {
+    if (!prefs.aiNotifs) return [];
+    final since = DateTime.now().subtract(const Duration(hours: 24)).millisecondsSinceEpoch;
+    return chat.msgs.reversed.where((m) => m.isNotif && m.ts > since).take(25).toList();
   }
 
   // ---------- long-press Vibe's avatar: recent apps pane ----------
@@ -561,7 +760,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   // ---------- message box ----------
   Widget _inputBar(VC c) {
     final typing = _input.text.trim().isNotEmpty;
-    return Padding(
+    final to = _replyTo;
+    final bar = Padding(
       padding: const EdgeInsets.fromLTRB(10, 6, 10, 10),
       child: Row(children: [
         Expanded(
@@ -593,7 +793,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                   onSubmitted: _send,
                   style: TextStyle(color: c.text, fontSize: 16),
                   decoration: InputDecoration(
-                    hintText: 'Message Vibe',
+                    hintText: to != null ? 'Reply to ${to.title?.isNotEmpty == true ? to.title : to.app}' : 'Message Vibe',
                     hintStyle: TextStyle(color: c.faint),
                     border: InputBorder.none,
                     isDense: true,
@@ -621,6 +821,38 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         ),
       ]),
     );
+    if (to == null) return bar;
+    return Column(mainAxisSize: MainAxisSize.min, children: [
+      Container(
+        margin: const EdgeInsets.fromLTRB(10, 6, 10, 0),
+        padding: const EdgeInsets.fromLTRB(12, 6, 4, 6),
+        decoration: BoxDecoration(color: c.pane, borderRadius: BorderRadius.circular(10)),
+        child: Row(children: [
+          Icon(Icons.reply_rounded, size: 16, color: c.muted),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text.rich(
+              TextSpan(children: [
+                TextSpan(text: 'Replying to ', style: TextStyle(color: c.muted, fontSize: 13)),
+                TextSpan(
+                    text: [to.title, to.app].where((e) => (e ?? '').isNotEmpty).join(' · '),
+                    style: TextStyle(color: c.text, fontSize: 13, fontWeight: FontWeight.w700)),
+              ]),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          InkWell(
+            customBorder: const CircleBorder(),
+            onTap: () => setState(() => _replyTo = null),
+            child: Padding(
+              padding: const EdgeInsets.all(6),
+              child: Icon(Icons.close_rounded, size: 18, color: c.muted),
+            ),
+          ),
+        ]),
+      ),
+      bar,
+    ]);
   }
 }
 

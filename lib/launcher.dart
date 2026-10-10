@@ -16,12 +16,22 @@ class AppEntry {
 class Native {
   static const _c = MethodChannel('vibe/launcher');
   static VoidCallback? onHomePressed;
+  static void Function(Map)? onNotification;
 
   static void init() {
     _c.setMethodCallHandler((call) async {
       if (call.method == 'homePressed') onHomePressed?.call();
+      if (call.method == 'notif' && call.arguments is Map) onNotification?.call(call.arguments as Map);
     });
   }
+
+  static Future<bool> notifAccess() async => await _c.invokeMethod<bool>('notifAccess') ?? false;
+  static Future<void> openNotifAccess() => _c.invokeMethod('openNotifAccess');
+  static Future<List<Map>> drainNotifs() async => await _c.invokeListMethod<Map>('drainNotifs') ?? [];
+  static Future<bool> replyNotif(String key, String text) async =>
+      await _c.invokeMethod<bool>('replyNotif', {'key': key, 'text': text}) ?? false;
+  static Future<bool> openNotif(String key) async =>
+      await _c.invokeMethod<bool>('openNotif', {'key': key}) ?? false;
 
   static Future<List<AppEntry>> apps() async {
     final raw = await _c.invokeListMethod<Map>('getApps') ?? [];
@@ -80,6 +90,9 @@ class Prefs extends ChangeNotifier {
   bool haptics = true;
   String name = 'You';
   String geminiKey = '';
+  bool showNotifs = true;
+  bool aiNotifs = true;
+  Set<String> muted = {};
   String geminiModel = '';
   Set<String> hidden = {};
   Map<String, int> lastUsed = {};
@@ -91,6 +104,9 @@ class Prefs extends ChangeNotifier {
     haptics = _p.getBool('haptics') ?? true;
     name = _p.getString('name') ?? 'You';
     geminiKey = _p.getString('geminiKey') ?? '';
+    showNotifs = _p.getBool('showNotifs') ?? true;
+    aiNotifs = _p.getBool('aiNotifs') ?? true;
+    muted = (_p.getStringList('muted') ?? []).toSet();
     geminiModel = _p.getString('geminiModel') ?? '';
     hidden = (_p.getStringList('hidden') ?? []).toSet();
     try {
@@ -109,6 +125,14 @@ class Prefs extends ChangeNotifier {
 
   void setGeminiKey(String v) { geminiKey = v.trim(); _p.setString('geminiKey', geminiKey); notifyListeners(); }
   void setGeminiModel(String v) { geminiModel = v.trim(); _p.setString('geminiModel', geminiModel); notifyListeners(); }
+
+  void setShowNotifs(bool v) { showNotifs = v; _p.setBool('showNotifs', v); notifyListeners(); }
+  void setAiNotifs(bool v) { aiNotifs = v; _p.setBool('aiNotifs', v); notifyListeners(); }
+  void toggleMuted(String pkg) {
+    muted.contains(pkg) ? muted.remove(pkg) : muted.add(pkg);
+    _p.setStringList('muted', muted.toList());
+    notifyListeners();
+  }
 
   void toggleHidden(String pkg) {
     hidden.contains(pkg) ? hidden.remove(pkg) : hidden.add(pkg);

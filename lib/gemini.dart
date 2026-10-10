@@ -12,12 +12,15 @@ class GeminiResult {
   final List<Call> calls;
   final List<Source> sources;
   final String? error;
-  GeminiResult({this.text = '', this.calls = const [], this.sources = const [], this.error});
+  /// 'busy' (overloaded / rate limited) or 'missing' (model not found): worth trying another model
+  final String? retry;
+  GeminiResult({this.text = '', this.calls = const [], this.sources = const [], this.error, this.retry});
 }
 
 /// Talks to Google's Gemini API with the user's own key (stored only on the phone).
 class Gemini {
   static const defaultModel = 'gemini-flash-latest';
+  static const fallbackModel = 'gemini-flash-lite-latest';
   static bool get enabled => prefs.geminiKey.trim().isNotEmpty;
 
   static final _tools = [
@@ -45,6 +48,12 @@ class Gemini {
           'label': _s('Optional label'),
         }, ['seconds']),
         _fn('clear_chat', 'Delete the chat history with Vibe.', {}, []),
+        _fn('reply_notification',
+            'Reply to a chat notification listed in the context (WhatsApp, Telegram, SMS…). '
+                'Only for notifications marked [can reply].',
+            {'id': _s('Notification id like "n3"'), 'text': _s('The reply to send')}, ['id', 'text']),
+        _fn('open_notification', 'Open the app screen behind a notification listed in the context.',
+            {'id': _s('Notification id like "n3"')}, ['id']),
       ]
     }
   ];
@@ -56,7 +65,7 @@ class Gemini {
         'parameters': {'type': 'object', 'properties': props, if (req.isNotEmpty) 'required': req},
       };
 
-  static String _system(List<AppEntry> apps) {
+  static String _system(List<AppEntry> apps, List<Msg> notifs) {
     final now = DateTime.now();
     final names = apps.map((a) => a.label).toList()..sort();
     return 'You are Vibe, a friendly assistant built into the user\'s Android home screen launcher. '
@@ -68,7 +77,25 @@ class Gemini {
         'If you call a function, you may add a very short message like "Opening WhatsApp" — no more. '
         'Current local time: ${now.toIso8601String()} (${_weekday(now.weekday)}). '
         'User\'s name: ${prefs.name}. '
-        'Installed apps: ${names.join(', ')}.';
+        'Installed apps: ${names.join(', ')}.'
+        '${_notifBlock(notifs)}';
+  }
+
+  /// Recent notifications, numbered so Gemini can refer to them (n1 = newest).
+  static String _notifBlock(List<Msg> notifs) {
+    if (notifs.isEmpty) return '';
+    final b = StringBuffer('\n\nRecent notifications on the phone (newest first). '
+        'Use them to answer questions like "what did I miss" or "did X message me". '
+        'Summarise naturally; don\'t list ids to the user. '
+        'Before replying to someone, make sure you picked the right notification:\n');
+    for (var i = 0; i < notifs.length; i++) {
+      final m = notifs[i];
+      final t = DateTime.fromMillisecondsSinceEpoch(m.ts);
+      final body = m.text.length > 220 ? '${m.text.substring(0, 220)}…' : m.text;
+      b.writeln('n${i + 1} | ${stamp(t)} | ${m.app}${(m.title ?? '').isEmpty ? '' : ' | ${m.title}'} | '
+          '$body${m.canReply ? ' [can reply]' : ''}');
+    }
+    return b.toString();
   }
 
   static String _weekday(int d) =>
@@ -77,13 +104,14 @@ class Gemini {
   /// Recent chat as Gemini turns (text only), merged so roles alternate.
   static List<Map> _history(List<Msg> msgs) {
     final out = <Map>[];
-    for (final m in msgs.length > 16 ? msgs.sublist(msgs.length - 16) : msgs) {
-      if (m.text.trim().isEmpty) continue;
+    final talk = msgs.where((m) => !m.isNotif && m.text.trim().isNotEmpty).toList();
+    for (final m in talk.length > 16 ? talk.sublist(talk.length - 16) : talk) {
       final role = m.me ? 'user' : 'model';
+      final text = m.quote != null ? '(my reply to ${m.quote}) ${m.text}' : m.text;
       if (out.isNotEmpty && out.last['role'] == role) {
-        (out.last['parts'] as List).add({'text': m.text});
+        (out.last['parts'] as List).add({'text': text});
       } else {
-        out.add({'role': role, 'parts': [{'text': m.text}]});
+        out.add({'role': role, 'parts': [{'text': text}]});
       }
     }
     while (out.isNotEmpty && out.first['role'] != 'user') {
@@ -93,9 +121,9 @@ class Gemini {
   }
 
   /// Main call: Gemini decides to reply and/or call functions.
-  static Future<GeminiResult> ask(List<Msg> history, List<AppEntry> apps) async {
+  static Future<GeminiResult> ask(List<Msg> history, List<AppEntry> apps, List<Msg> notifs) async {
     final body = {
-      'systemInstruction': {'parts': [{'text': _system(apps)}]},
+      'systemInstruction': {'parts': [{'text': _system(apps, notifs)}]},
       'contents': _history(history),
       'tools': _tools,
     };
@@ -124,8 +152,30 @@ class Gemini {
     return _post(body);
   }
 
+  /// Tries your model, waits and tries again if it's busy, then falls back to the lighter model.
   static Future<GeminiResult> _post(Map body) async {
     final model = prefs.geminiModel.trim().isEmpty ? defaultModel : prefs.geminiModel.trim();
+    final plan = <(String, int)>[
+      (model, 0),
+      (model, 1500),
+      if (model != fallbackModel) (fallbackModel, 0),
+    ];
+    GeminiResult? last;
+    for (final (m, wait) in plan) {
+      if (wait > 0) await Future.delayed(Duration(milliseconds: wait));
+      final r = await _once(m, body);
+      if (r.retry == null) return r;
+      if (r.retry == 'missing' && m == fallbackModel && last != null) break;
+      if (r.retry == 'missing' && m == model) return r;
+      last = r;
+    }
+    if (last?.retry == 'quota') {
+      return GeminiResult(error: 'Gemini\'s free limit is used up for now. Try again in a minute.');
+    }
+    return GeminiResult(error: 'Gemini is busy right now. Try again in a moment.');
+  }
+
+  static Future<GeminiResult> _once(String model, Map body) async {
     final uri = Uri.parse(
         'https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent');
     final client = HttpClient()..connectionTimeout = const Duration(seconds: 15);
@@ -143,8 +193,9 @@ class Gemini {
 
       if (res.statusCode != 200) {
         final msg = (j['error'] is Map ? j['error']['message'] : null)?.toString() ?? '';
-        if (res.statusCode == 429) {
-          return GeminiResult(error: 'Gemini\'s free limit is used up for now. Try again in a minute.');
+        if (res.statusCode == 429) return GeminiResult(retry: 'quota');
+        if (res.statusCode == 503 || res.statusCode == 500 || res.statusCode == 502 || res.statusCode == 504) {
+          return GeminiResult(retry: 'busy');
         }
         if ((res.statusCode == 400 && msg.toLowerCase().contains('api key')) ||
             res.statusCode == 401 ||
@@ -152,7 +203,9 @@ class Gemini {
           return GeminiResult(error: 'Your Gemini key isn\'t working. Check it in launcher settings.');
         }
         if (res.statusCode == 404) {
-          return GeminiResult(error: 'Gemini model "$model" wasn\'t found. Check the model in launcher settings.');
+          return GeminiResult(
+              retry: 'missing',
+              error: 'Gemini model "$model" wasn\'t found. Check the model in launcher settings.');
         }
         return GeminiResult(error: 'Gemini error ${res.statusCode}${msg.isEmpty ? '' : ': $msg'}');
       }
@@ -189,7 +242,7 @@ class Gemini {
     } on SocketException {
       return GeminiResult(error: 'I\'m offline right now. I can still open your apps.');
     } on TimeoutException {
-      return GeminiResult(error: 'Gemini took too long to answer. Try again.');
+      return GeminiResult(retry: 'busy');
     } on HandshakeException {
       return GeminiResult(error: 'Couldn\'t reach Gemini securely. Check your connection.');
     } catch (e) {
