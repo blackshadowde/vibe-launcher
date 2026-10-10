@@ -1,5 +1,6 @@
 package com.vibe.vibe_launcher
 
+import android.app.SearchManager
 import android.app.role.RoleManager
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -10,6 +11,8 @@ import android.os.BatteryManager
 import android.os.Build
 import android.os.Environment
 import android.os.StatFs
+import android.provider.AlarmClock
+import android.provider.MediaStore
 import android.provider.Settings
 import android.speech.RecognizerIntent
 import io.flutter.embedding.android.FlutterActivity
@@ -55,6 +58,33 @@ class MainActivity : FlutterActivity() {
                 )
                 "isDefaultLauncher" -> result.success(isDefaultLauncher())
                 "deviceInfo" -> result.success(deviceInfo())
+                "openUrl" -> result.success(
+                    open(Intent(Intent.ACTION_VIEW, Uri.parse(call.argument<String>("url") ?: "")))
+                )
+                "playMusic" -> {
+                    val q = call.argument<String>("query") ?: ""
+                    val i = Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH)
+                        .putExtra(MediaStore.EXTRA_MEDIA_FOCUS, "vnd.android.cursor.item/*")
+                        .putExtra(SearchManager.QUERY, q)
+                    result.success(open(i))
+                }
+                "setAlarm" -> {
+                    val i = Intent(AlarmClock.ACTION_SET_ALARM)
+                        .putExtra(AlarmClock.EXTRA_HOUR, call.argument<Int>("hour") ?: 7)
+                        .putExtra(AlarmClock.EXTRA_MINUTES, call.argument<Int>("minute") ?: 0)
+                        .putExtra(AlarmClock.EXTRA_SKIP_UI, true)
+                    val label = call.argument<String>("label")
+                    if (!label.isNullOrBlank()) i.putExtra(AlarmClock.EXTRA_MESSAGE, label)
+                    result.success(open(i))
+                }
+                "setTimer" -> {
+                    val i = Intent(AlarmClock.ACTION_SET_TIMER)
+                        .putExtra(AlarmClock.EXTRA_LENGTH, call.argument<Int>("seconds") ?: 60)
+                        .putExtra(AlarmClock.EXTRA_SKIP_UI, true)
+                    val label = call.argument<String>("label")
+                    if (!label.isNullOrBlank()) i.putExtra(AlarmClock.EXTRA_MESSAGE, label)
+                    result.success(open(i))
+                }
                 "listen" -> {
                     listenResult?.success(null)
                     listenResult = result
