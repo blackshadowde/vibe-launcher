@@ -182,6 +182,10 @@ class Prefs extends ChangeNotifier {
   static const _vault = FlutterSecureStorage();
   String geminiKey = '';
   String routerKey = ''; // OpenRouter, the backup when Gemini is busy
+  String groqKey = ''; // Groq (free): OpenAI's open gpt-oss model, very fast
+  String groqModel = '';
+  bool cfChat = true; // also chat through Cloudflare when its keys are set
+  String mainAi = 'gemini'; // gemini, groq or cloudflare
   List<String> routerModels = []; // free models picked from OpenRouter's list
   int routerModelsAt = 0;
   bool showNotifs = true;
@@ -223,6 +227,7 @@ class Prefs extends ChangeNotifier {
     try {
       geminiKey = await _vault.read(key: 'geminiKey') ?? '';
       routerKey = await _vault.read(key: 'routerKey') ?? '';
+      groqKey = await _vault.read(key: 'groqKey') ?? '';
       final old = _p.getString('geminiKey');
       if (old != null) {
         if (geminiKey.isEmpty && old.isNotEmpty) {
@@ -235,6 +240,10 @@ class Prefs extends ChangeNotifier {
       geminiKey = _p.getString('geminiKey') ?? '';
     }
     routerModels = _p.getStringList('routerModels') ?? [];
+    groqModel = _p.getString('groqModel') ?? '';
+    cfChat = _p.getBool('cfChat') ?? true;
+    mainAi = _p.getString('mainAi') ?? 'gemini';
+    if (!const ['gemini', 'groq', 'cloudflare'].contains(mainAi)) mainAi = 'gemini';
     routerModelsAt = _p.getInt('routerModelsAt') ?? 0;
     showNotifs = _p.getBool('showNotifs') ?? true;
     aiNotifs = _p.getBool('aiNotifs') ?? true;
@@ -286,6 +295,16 @@ class Prefs extends ChangeNotifier {
     _vault.write(key: 'geminiKey', value: geminiKey).catchError((_) {});
     notifyListeners();
   }
+
+  void setGroqKey(String v) {
+    groqKey = v.trim();
+    _vault.write(key: 'groqKey', value: groqKey).catchError((_) {});
+    notifyListeners();
+  }
+
+  void setGroqModel(String v) { groqModel = v.trim(); _p.setString('groqModel', groqModel); notifyListeners(); }
+  void setCfChat(bool v) { cfChat = v; _p.setBool('cfChat', v); notifyListeners(); }
+  void setMainAi(String v) { mainAi = v; _p.setString('mainAi', v); notifyListeners(); }
 
   void setRouterKey(String v) {
     routerKey = v.trim();

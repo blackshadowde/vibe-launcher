@@ -25,7 +25,22 @@ class GeminiResult {
 class Gemini {
   static const defaultModel = 'gemini-flash-latest';
   static const fallbackModel = 'gemini-flash-lite-latest';
-  static bool get enabled => prefs.geminiKey.trim().isNotEmpty || prefs.routerKey.trim().isNotEmpty;
+  static bool get enabled =>
+      prefs.geminiKey.trim().isNotEmpty ||
+      prefs.routerKey.trim().isNotEmpty ||
+      prefs.groqKey.trim().isNotEmpty ||
+      cloudflareChat;
+  static bool get cloudflareChat => prefs.cfChat && prefs.cfAccount.isNotEmpty && prefs.cfToken.isNotEmpty;
+  static const groqDefault = 'openai/gpt-oss-120b';
+  static const cfModel = '@cf/openai/gpt-oss-120b';
+
+  /// Display name for an answer that didn't come from Gemini.
+  static String? label(String via) => switch (via) {
+        'groq' => 'Groq',
+        'cloudflare' => 'Cloudflare AI',
+        'openrouter' => 'Backup AI',
+        _ => null,
+      };
 
   static final _tools = [
     {
@@ -170,8 +185,10 @@ class Gemini {
   static List<Map> _history(List<Msg> msgs) {
     final out = <Map>[];
     // Error lines aren't real answers, and on-phone answers may hold private details: leave both out
-    final talk = msgs.where((m) => !m.isNotif && !m.error && !m.local && m.text.trim().isNotEmpty).toList();
-    for (final m in talk.length > 16 ? talk.sublist(talk.length - 16) : talk) {
+    final talk = msgs
+        .where((m) => !m.isNotif && !m.talk && !m.error && !m.local && m.text.trim().isNotEmpty)
+        .toList();
+    for (final m in talk.length > 30 ? talk.sublist(talk.length - 30) : talk) {
       final role = m.me ? 'user' : 'model';
       final text = m.quote == null
           ? m.text
@@ -235,8 +252,10 @@ class Gemini {
       ],
     };
     final r = await _post(body);
-    if (r.via == 'openrouter' && r.error == null) {
-      return GeminiResult(text: '${r.text}\n\n_(Gemini is busy, so this is from the backup AI without live search.)_', via: r.via);
+    if (r.via != 'gemini' && r.error == null) {
+      return GeminiResult(
+          text: '${r.text}\n\n_(Live Google search needs Gemini, so this is from ${label(r.via)} without live results.)_',
+          via: r.via);
     }
     return r;
   }
@@ -273,15 +292,55 @@ class Gemini {
     }
   }
 
-  /// Tries your model, waits and tries again if it's busy, then falls back to the lighter model.
+  /// Tries your main AI first, then the other free ones in turn, so you almost always get an answer.
+  /// Order: your main pick → Groq → Cloudflare → Gemini → OpenRouter (backup).
   static Future<GeminiResult> _post(Map body) async {
-    if (prefs.geminiKey.trim().isEmpty) return _router(body);
-    final r = await _postGemini(body);
-    if (r.error != null && prefs.routerKey.trim().isNotEmpty && !r.error!.contains('offline')) {
-      final b = await _router(body);
-      if (b.error == null) return b;
+    final tools = body['tools'] as List? ?? [];
+    final isSearch = tools.any((t) => t is Map && t['google_search'] != null);
+    final hasImage = (body['contents'] as List? ?? []).any((c) =>
+        c is Map && (c['parts'] as List? ?? []).any((p) => p is Map && p['inlineData'] != null));
+    final gemini = prefs.geminiKey.trim().isNotEmpty;
+    // Live Google search and pictures need Gemini; the others are text-only
+    final order = <String>[
+      if (gemini && (isSearch || hasImage)) 'gemini',
+      if (prefs.mainAi != 'gemini') prefs.mainAi,
+      'gemini', 'groq', 'cloudflare', 'openrouter',
+    ];
+    GeminiResult? first;
+    for (final ai in order.toSet()) {
+      if (hasImage && ai != 'gemini' && ai != 'openrouter') continue;
+      final GeminiResult r;
+      switch (ai) {
+        case 'gemini':
+          if (!gemini) continue;
+          r = await _postGemini(body);
+        case 'groq':
+          if (prefs.groqKey.trim().isEmpty) continue;
+          r = await _compat(body,
+              via: 'groq',
+              name: 'Groq',
+              url: 'https://api.groq.com/openai/v1/chat/completions',
+              key: prefs.groqKey,
+              model: prefs.groqModel.isEmpty ? groqDefault : prefs.groqModel);
+        case 'cloudflare':
+          if (!cloudflareChat) continue;
+          r = await _compat(body,
+              via: 'cloudflare',
+              name: 'Cloudflare AI',
+              url: 'https://api.cloudflare.com/client/v4/accounts/${prefs.cfAccount}/ai/v1/chat/completions',
+              key: prefs.cfToken,
+              model: cfModel);
+        case 'openrouter':
+          if (prefs.routerKey.trim().isEmpty) continue;
+          r = await _router(body);
+        default:
+          continue;
+      }
+      if (r.error == null) return r;
+      first ??= r;
+      if (r.error!.contains('offline')) return r; // no internet: the others won't work either
     }
-    return r;
+    return first ?? GeminiResult(error: 'Add a free AI key in Vibe settings → Vibe AI.');
   }
 
   static Future<GeminiResult> _postGemini(Map body) async {
@@ -335,25 +394,27 @@ class Gemini {
     }
   }
 
-  /// Sends the same request to OpenRouter in its (OpenAI-style) format.
-  static Future<GeminiResult> _router(Map body) async {
-    if (prefs.routerKey.trim().isEmpty) {
-      return GeminiResult(error: 'Add a Gemini or OpenRouter key in Vibe settings.');
-    }
-    final models = await _routerModels();
-    if (models.isEmpty) return GeminiResult(error: 'Couldn\'t reach OpenRouter right now.', via: 'openrouter');
-
+  /// The same request in OpenAI's chat format (used for Groq, Cloudflare and OpenRouter).
+  static (List<Map>, List<Map>) _toChat(Map body) {
     final msgs = <Map>[];
     final sys = (body['systemInstruction'] as Map?)?['parts']?[0]?['text'];
     if (sys is String) msgs.add({'role': 'system', 'content': sys});
     for (final c in (body['contents'] as List? ?? [])) {
       if (c is! Map) continue;
-      final text = (c['parts'] as List? ?? [])
-          .whereType<Map>()
-          .where((p) => p['text'] is String)
-          .map((p) => p['text'] as String)
-          .join('\n');
-      if (text.isNotEmpty) msgs.add({'role': c['role'] == 'model' ? 'assistant' : 'user', 'content': text});
+      final parts = (c['parts'] as List? ?? []).whereType<Map>();
+      final text = parts.where((p) => p['text'] is String).map((p) => p['text'] as String).join('\n');
+      final img = parts.where((p) => p['inlineData'] is Map).map((p) => p['inlineData'] as Map).firstOrNullSafe;
+      if (img != null && c['role'] != 'model') {
+        msgs.add({
+          'role': 'user',
+          'content': [
+            {'type': 'text', 'text': text.isEmpty ? 'What is in this picture?' : text},
+            {'type': 'image_url', 'image_url': {'url': 'data:${img['mimeType']};base64,${img['data']}'}},
+          ]
+        });
+      } else if (text.isNotEmpty) {
+        msgs.add({'role': c['role'] == 'model' ? 'assistant' : 'user', 'content': text});
+      }
     }
     final tools = <Map>[];
     for (final t in (body['tools'] as List? ?? [])) {
@@ -363,6 +424,81 @@ class Gemini {
         }
       }
     }
+    return (msgs, tools);
+  }
+
+  /// Any OpenAI-style chat API (Groq, Cloudflare Workers AI).
+  static Future<GeminiResult> _compat(Map body,
+      {required String via, required String name, required String url, required String key, required String model}) async {
+    final (msgs, tools) = _toChat(body);
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 15);
+    try {
+      final r = await client.postUrl(Uri.parse(url));
+      r.headers.contentType = ContentType.json;
+      r.headers.set('Authorization', 'Bearer ${key.trim()}');
+      r.add(utf8.encode(jsonEncode({'model': model, 'messages': msgs, if (tools.isNotEmpty) 'tools': tools})));
+      final res = await r.close().timeout(const Duration(seconds: 45));
+      final raw = await res.transform(utf8.decoder).join();
+      Map j = {};
+      try {
+        j = jsonDecode(raw) as Map;
+      } catch (_) {}
+      if (res.statusCode == 401 || res.statusCode == 403) {
+        return GeminiResult(error: 'Your $name key isn\'t working. Check it in Vibe settings → Vibe AI.', via: via);
+      }
+      if (res.statusCode == 429) {
+        return GeminiResult(error: '$name\'s free limit is used up for now. Try again later.', via: via);
+      }
+      if (res.statusCode != 200 || j['choices'] is! List || (j['choices'] as List).isEmpty) {
+        return GeminiResult(error: '$name didn\'t answer. Try again in a moment.', via: via);
+      }
+      final out = _readChat(j, via);
+      if (out.text.isEmpty && out.calls.isEmpty) {
+        return GeminiResult(error: '$name didn\'t answer. Try again in a moment.', via: via);
+      }
+      return out;
+    } on SocketException {
+      return GeminiResult(error: 'I\'m offline right now. I can still open your apps.', via: via);
+    } catch (_) {
+      return GeminiResult(error: '$name didn\'t answer. Try again in a moment.', via: via);
+    } finally {
+      client.close();
+    }
+  }
+
+  /// Chat models on your Groq account, for the picker.
+  static Future<List<String>?> listGroqModels() async {
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 15);
+    try {
+      final r = await client.getUrl(Uri.parse('https://api.groq.com/openai/v1/models'));
+      r.headers.set('Authorization', 'Bearer ${prefs.groqKey.trim()}');
+      final res = await r.close().timeout(const Duration(seconds: 20));
+      final raw = await res.transform(utf8.decoder).join();
+      if (res.statusCode != 200) return null;
+      final ids = (jsonDecode(raw)['data'] as List? ?? [])
+          .whereType<Map>()
+          .where((m) => m['active'] != false)
+          .map((m) => '${m['id']}')
+          .where((id) => !RegExp(r'whisper|tts|guard|playai|orpheus|compound|distil').hasMatch(id))
+          .toList()
+        ..sort();
+      return ids;
+    } catch (_) {
+      return null;
+    } finally {
+      client.close();
+    }
+  }
+
+  /// Sends the same request to OpenRouter in its (OpenAI-style) format.
+  static Future<GeminiResult> _router(Map body) async {
+    if (prefs.routerKey.trim().isEmpty) {
+      return GeminiResult(error: 'Add a Gemini or OpenRouter key in Vibe settings.');
+    }
+    final models = await _routerModels();
+    if (models.isEmpty) return GeminiResult(error: 'Couldn\'t reach OpenRouter right now.', via: 'openrouter');
+
+    final (msgs, tools) = _toChat(body);
     final req = {
       'model': models.first,
       'models': models.take(3).toList(),
@@ -389,18 +525,7 @@ class Gemini {
       if (res.statusCode != 200 || j['choices'] is! List || (j['choices'] as List).isEmpty) {
         return GeminiResult(error: 'The backup AI is busy too. Try again in a moment.', via: 'openrouter');
       }
-      final m = ((j['choices'] as List).first as Map)['message'] as Map? ?? {};
-      final calls = <Call>[];
-      for (final tc in (m['tool_calls'] as List? ?? [])) {
-        final f = (tc is Map ? tc['function'] : null) as Map?;
-        if (f == null) continue;
-        Map<String, dynamic> args = {};
-        try {
-          args = Map<String, dynamic>.from(jsonDecode('${f['arguments'] ?? '{}'}') as Map);
-        } catch (_) {}
-        calls.add((name: '${f['name']}', args: args));
-      }
-      return GeminiResult(text: '${m['content'] ?? ''}'.trim(), calls: calls, via: 'openrouter');
+      return _readChat(j, 'openrouter');
     } on SocketException {
       return GeminiResult(error: 'I\'m offline right now. I can still open your apps.', via: 'openrouter');
     } catch (_) {
@@ -488,4 +613,8 @@ class Gemini {
       client.close();
     }
   }
+}
+
+extension _FirstOrNull<T> on Iterable<T> {
+  T? get firstOrNullSafe => isEmpty ? null : first;
 }

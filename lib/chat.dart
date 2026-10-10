@@ -27,6 +27,8 @@ class Msg {
   final String? img; // picture you sent (path on the phone)
   final bool local; // answered by the on-phone AI (never sent to the cloud)
   final bool talk; // an app "talking" (Play Store, Chrome, Settings…), not a notification
+  final String? thread; // conversation this line belongs to (swipe-reply continues it)
+  final String? ai; // which AI answered, when not Gemini: Groq / Cloudflare AI / Backup AI
 
   Msg(this.me, this.text,
       {int? ts,
@@ -45,7 +47,9 @@ class Msg {
       this.card,
       this.img,
       this.local = false,
-      this.talk = false})
+      this.talk = false,
+      this.thread,
+      this.ai})
       : ts = ts ?? DateTime.now().millisecondsSinceEpoch;
 
   bool get isNotif => pkg != null && !talk;
@@ -71,6 +75,8 @@ class Msg {
         if (img != null) 'i': img,
         if (local) 'lo': true,
         if (talk) 'tk': true,
+        if (thread != null) 'th': thread,
+        if (ai != null) 'ai': ai,
       };
   static Msg fromJson(Map j) => Msg(j['m'] == true, j['t'] ?? '',
       ts: j['s'] ?? 0,
@@ -89,7 +95,15 @@ class Msg {
       card: j['x'] is Map ? Map.from(j['x']) : null,
       img: j['i'],
       local: j['lo'] == true,
-      talk: j['tk'] == true);
+      talk: j['tk'] == true,
+      thread: j['th'],
+      ai: j['ai']);
+
+  /// Same line, moved into a conversation thread.
+  Msg inThread(String t) => Msg(me, text,
+      ts: ts, apps: apps, links: links, error: error, pkg: pkg, app: app, title: title, nkey: nkey,
+      canReply: canReply, quote: quote, quoteName: quoteName, quotePkg: quotePkg, media: media, card: card,
+      img: img, local: local, talk: talk, thread: t, ai: ai);
 }
 
 /// Chat history, kept on the phone (last 500 lines).
@@ -171,8 +185,9 @@ class Brain {
       '• "draw a cat astronaut", "make a wallpaper of a misty forest", then "set it as wallpaper"\n'
       '• Tap + for Camera or Photos and ask about a picture, or share anything to Vibe from any app\n'
       '• Long-press my avatar for your recent apps\n'
+      '• Swipe right on any of my answers to continue that same conversation later\n'
       'Notifications show up here: tap Reply to answer, long-press to mute an app.\n'
-      'With a Gemini key (launcher settings) you can also just talk to me: ask questions, '
+      'With a free AI key (Vibe settings → Vibe AI) you can also just talk to me: ask questions, '
       'search Google, play music, set alarms and timers, "what did I miss?", '
       '"reply to Ravi I\'m on my way".';
 

@@ -25,7 +25,7 @@ class SettingsPage extends StatelessWidget {
     (Icons.contacts_rounded, 'People', 'Contacts, calls, SMS & default messenger', {'PEOPLE'}),
     (Icons.manage_search_rounded, 'Search & mail', 'Global search, SMS & files access, Gmail', {'SEARCH'}),
     (Icons.wb_sunny_rounded, 'Daily brief', 'Brief time, city for weather & calendar', {'DAILY BRIEF'}),
-    (Icons.auto_awesome_rounded, 'Vibe AI', 'On-phone AI, Gemini, backup AI & pictures', {'ON-PHONE AI', 'VIBE AI (GEMINI)', 'PICTURES'}),
+    (Icons.auto_awesome_rounded, 'Vibe AI', 'On-phone AI, Gemini, Groq, Cloudflare, backup AI & pictures', {'ON-PHONE AI', 'MAIN AI', 'VIBE AI (GEMINI)', 'GROQ', 'PICTURES'}),
     (Icons.shield_rounded, 'Privacy', 'What stays on your phone', {'PRIVACY'}),
     (Icons.psychology_rounded, 'Memory', 'What Vibe remembers about you', {'MEMORY'}),
     (Icons.cloud_off_rounded, 'Offline mode', 'Use no internet; answer later', {'OFFLINE MODE'}),
@@ -327,6 +327,86 @@ class SettingsPage extends StatelessWidget {
                         }
                       : null,
                 );
+              },
+            ),
+          ]),
+          ],
+          if (show.contains('MAIN AI')) ...[
+          _section(c, 'MAIN AI'),
+          _group(c, [
+            _radio(c, 'Gemini (Google, free)', prefs.mainAi == 'gemini', () => prefs.setMainAi('gemini')),
+            _radio(c, 'Groq (free, very fast)', prefs.mainAi == 'groq', () {
+              prefs.setMainAi('groq');
+              if (prefs.groqKey.isEmpty) {
+                _editText(context, 'Groq API key', prefs.groqKey, prefs.setGroqKey, hint: 'gsk_…', secret: true);
+              }
+            }),
+            _radio(c, 'Cloudflare (free, uses your picture keys)', prefs.mainAi == 'cloudflare', () {
+              prefs.setMainAi('cloudflare');
+              if (!prefs.cfChat) prefs.setCfChat(true);
+            }),
+            ListTile(
+              leading: Icon(Icons.info_outline_rounded, color: c.muted),
+              title: Text('If it\'s busy, Vibe asks the next one', style: TextStyle(color: c.text)),
+              subtitle: Text(
+                  'Your pick → Groq → Cloudflare → Gemini → OpenRouter. Each answer shows which AI replied. '
+                  'Google search and pictures always use Gemini. OTPs and bank alerts never leave the phone.',
+                  style: TextStyle(color: c.faint)),
+            ),
+          ]),
+          ],
+          if (show.contains('GROQ')) ...[
+          _section(c, 'GROQ & CLOUDFLARE'),
+          _group(c, [
+            ListTile(
+              leading: Icon(Icons.bolt_rounded, color: c.muted),
+              title: Text('Groq API key', style: TextStyle(color: c.text)),
+              subtitle: Text(
+                  prefs.groqKey.isEmpty
+                      ? 'Optional: free, about 1,000 answers a day'
+                      : 'Set (…${prefs.groqKey.substring(prefs.groqKey.length < 4 ? 0 : prefs.groqKey.length - 4)}). Stored encrypted on this phone',
+                  style: TextStyle(color: prefs.mainAi == 'groq' && prefs.groqKey.isEmpty ? VC.yellow : c.faint)),
+              trailing: Icon(Icons.chevron_right_rounded, color: c.faint),
+              onTap: () => _editText(context, 'Groq API key', prefs.groqKey, prefs.setGroqKey,
+                  hint: 'gsk_…', secret: true),
+            ),
+            ListTile(
+              leading: Icon(Icons.open_in_new_rounded, color: c.muted),
+              title: Text('Get a free Groq key', style: TextStyle(color: c.text)),
+              subtitle: Text('console.groq.com → API Keys', style: TextStyle(color: c.faint)),
+              onTap: () => Native.openUrl('https://console.groq.com/keys'),
+            ),
+            if (prefs.groqKey.isNotEmpty)
+              ListTile(
+                leading: Icon(Icons.memory_rounded, color: c.muted),
+                title: Text('Groq model', style: TextStyle(color: c.text)),
+                subtitle: Text(prefs.groqModel.isEmpty ? '${Gemini.groqDefault} (default)' : prefs.groqModel,
+                    style: TextStyle(color: c.faint)),
+                trailing: Icon(Icons.chevron_right_rounded, color: c.faint),
+                onTap: () => _pickGroqModel(context),
+              ),
+            if (prefs.groqKey.isNotEmpty)
+              ListTile(
+                leading: const Icon(Icons.key_off_rounded, color: VC.red),
+                title: const Text('Remove Groq key', style: TextStyle(color: VC.red)),
+                onTap: () {
+                  prefs.setGroqKey('');
+                  prefs.setGroqModel('');
+                  if (prefs.mainAi == 'groq') prefs.setMainAi('gemini');
+                },
+              ),
+            SwitchListTile(
+              secondary: Icon(Icons.cloud_outlined, color: c.muted),
+              title: Text('Chat through Cloudflare too', style: TextStyle(color: c.text)),
+              subtitle: Text(
+                  prefs.cfToken.isEmpty
+                      ? 'Add your Cloudflare keys under Pictures first'
+                      : 'Same free daily allowance as pictures',
+                  style: TextStyle(color: c.faint)),
+              value: prefs.cfChat,
+              onChanged: (v) {
+                prefs.setCfChat(v);
+                if (!v && prefs.mainAi == 'cloudflare') prefs.setMainAi('gemini');
               },
             ),
           ]),
@@ -737,7 +817,7 @@ class SettingsPage extends StatelessWidget {
             ListTile(
               leading: Icon(Icons.info_outline_rounded, color: c.muted),
               title: Text('Vibe Launcher', style: TextStyle(color: c.text)),
-              subtitle: Text('Version 0.17.0', style: TextStyle(color: c.faint)),
+              subtitle: Text('Version 0.18.0', style: TextStyle(color: c.faint)),
             ),
           ]),
           ],
@@ -801,6 +881,62 @@ class SettingsPage extends StatelessWidget {
                 )
               else
                 for (final m in list.where((m) => m.id != Gemini.defaultModel)) tile(m.id, m.label, m.id),
+              const SizedBox(height: 16),
+            ]);
+          },
+        ),
+      ),
+    );
+  }
+
+  void _pickGroqModel(BuildContext context) {
+    final c = VC.of(context);
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (ctx) => SizedBox(
+        height: MediaQuery.of(ctx).size.height * 0.7,
+        child: FutureBuilder<List<String>?>(
+          future: Gemini.listGroqModels(),
+          builder: (ctx, snap) {
+            if (snap.connectionState != ConnectionState.done) {
+              return Center(child: CircularProgressIndicator(color: VC.blurple));
+            }
+            final list = snap.data;
+            Widget tile(String id, String label) {
+              final on = (prefs.groqModel.isEmpty ? Gemini.groqDefault : prefs.groqModel) == id;
+              return ListTile(
+                title: Text(label, style: TextStyle(color: c.text, fontWeight: FontWeight.w600)),
+                trailing: Icon(on ? Icons.radio_button_checked_rounded : Icons.radio_button_off_rounded,
+                    color: on ? VC.blurple : c.faint),
+                onTap: () {
+                  prefs.setGroqModel(id == Gemini.groqDefault ? '' : id);
+                  Navigator.pop(ctx);
+                },
+              );
+            }
+
+            return ListView(children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+                child: Text('Choose a Groq model',
+                    style: TextStyle(color: c.text, fontSize: 18, fontWeight: FontWeight.w800)),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+                child: Text('All free. gpt-oss-120b is the smartest; smaller ones are faster.',
+                    style: TextStyle(color: c.muted, fontSize: 13)),
+              ),
+              tile(Gemini.groqDefault, 'Default (${Gemini.groqDefault})'),
+              if (list == null)
+                Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: Text('Couldn\'t load the model list. Check your key and connection.',
+                      style: TextStyle(color: VC.red)),
+                )
+              else
+                for (final m in list.where((m) => m != Gemini.groqDefault)) tile(m, m),
               const SizedBox(height: 16),
             ]);
           },

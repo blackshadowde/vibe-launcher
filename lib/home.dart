@@ -227,8 +227,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
       bool error = false,
       Map? card,
       bool local = false,
-      String? img}) {
-    chat.add(Msg(false, text, apps: apps, links: links, error: error, card: card, local: local, img: img));
+      String? img,
+      String? ai}) {
+    chat.add(Msg(false, text,
+        apps: apps, links: links, error: error, card: card, local: local, img: img, ai: ai, thread: _curThread));
     _toBottom();
   }
 
@@ -306,12 +308,49 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
   }
 
   // ---------- Gemini ----------
-  Future<void> _askGemini(String question, {String? imagePath, List<Msg>? history}) async {
-    // No cloud key, or no internet: the on-phone AI answers if it can
-    if (history == null && (!_netOk || !Gemini.enabled) && _nano == 'available') {
-      if (await _askNano(question, imagePath: imagePath)) return;
+  // ---------- Conversation threads ----------
+  String? _curThread; // the thread being answered right now
+
+  /// Continue the latest conversation if it was recent, otherwise start a new one.
+  String _threadForNew() {
+    for (final m in chat.msgs.reversed) {
+      if (m.thread != null) {
+        if (DateTime.now().millisecondsSinceEpoch - m.ts < 15 * 60 * 1000) return m.thread!;
+        break;
+      }
     }
-    if (!_netOk && history == null) {
+    return 't${DateTime.now().millisecondsSinceEpoch}';
+  }
+
+  /// Puts your newest message into the thread.
+  void _tagLastMine(String t) {
+    for (var i = chat.msgs.length - 1; i >= 0; i--) {
+      final m = chat.msgs[i];
+      if (m.me) {
+        if (m.thread != t) chat.replace(m, m.inThread(t));
+        return;
+      }
+    }
+  }
+
+  Future<void> _askGemini(String question, {String? imagePath, List<Msg>? history, String? thread}) async {
+    final t = thread ?? _threadForNew();
+    if (history == null) _tagLastMine(t);
+    final convo = history ?? chat.msgs.where((m) => m.thread == t).toList();
+    _curThread = t;
+    try {
+      await _askAi(question, convo, imagePath: imagePath, queued: history != null);
+    } finally {
+      _curThread = null;
+    }
+  }
+
+  Future<void> _askAi(String question, List<Msg> convo, {String? imagePath, bool queued = false}) async {
+    // No cloud key, or no internet: the on-phone AI answers if it can
+    if (!queued && (!_netOk || !Gemini.enabled) && _nano == 'available') {
+      if (await _askNano(question, imagePath: imagePath, convo: convo)) return;
+    }
+    if (!_netOk && !queued) {
       // No internet (or offline mode): park the question and answer it later
       final mine = chat.msgs.lastWhere((m) => m.me, orElse: () => Msg(true, question));
       prefs.setQueue([...prefs.queue, mine.ts]);
@@ -325,14 +364,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     _toBottom();
     try {
       _askedNotifs = _ctxNotifs;
-      final res = await Gemini.ask(history ?? chat.msgs, _apps, _askedNotifs, imagePath: imagePath);
+      final res = await Gemini.ask(convo, _apps, _askedNotifs, imagePath: imagePath);
       if (!mounted) return;
       if (res.error != null) {
         _say(res.error!, error: true);
         return;
       }
+      final tag = Gemini.label(res.via);
       if (res.calls.isEmpty) {
-        _say(res.text.isEmpty ? '🤔' : res.text);
+        _say(res.text.isEmpty ? '🤔' : res.text, ai: tag);
         return;
       }
       var preface = res.text;
@@ -1295,7 +1335,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
   }
 
   // ---------- On-phone AI (Gemini Nano) ----------
-  String _nanoPrompt(String question, {String extra = ''}) {
+  String _nanoPrompt(String question, {String extra = '', List<Msg>? convo}) {
     final b = StringBuffer()
       ..writeln('You are Vibe, a friendly assistant built into the user\'s phone launcher.')
       ..writeln('Reply briefly and naturally, in the same language the user writes in. You cannot browse the internet.')
@@ -1307,7 +1347,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
       }
     }
     if (extra.isNotEmpty) b.writeln(extra);
-    final talk = chat.msgs.where((m) => !m.isNotif && !m.error && m.text.trim().isNotEmpty && m.card == null).toList();
+    final talk = (convo ?? chat.msgs)
+        .where((m) => !m.isNotif && !m.talk && !m.error && m.text.trim().isNotEmpty && m.card == null)
+        .toList();
     final recent = talk.length > 10 ? talk.sublist(talk.length - 10) : talk;
     b.writeln('\nConversation:');
     for (final m in recent) {
@@ -1323,10 +1365,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
   }
 
   /// Answers on the phone. False if the on-phone AI couldn't.
-  Future<bool> _askNano(String question, {String? imagePath, String extra = ''}) async {
+  Future<bool> _askNano(String question, {String? imagePath, String extra = '', List<Msg>? convo}) async {
     setState(() => _thinking = true);
     _toBottom();
-    final text = await Native.nanoAsk(_nanoPrompt(question, extra: extra), image: imagePath);
+    final text = await Native.nanoAsk(_nanoPrompt(question, extra: extra, convo: convo), image: imagePath);
     if (mounted) setState(() => _thinking = false);
     if (text == null || text.trim().isEmpty) return false;
     _say(text.trim(), local: true);
@@ -2589,6 +2631,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
                     Icon(Icons.phone_android_rounded, size: 12, color: c.faint),
                     Text(' On-phone', style: TextStyle(color: c.faint, fontSize: 11)),
                   ],
+                  if (m.ai != null) ...[
+                    const SizedBox(width: 6),
+                    Text('· ${m.ai}', style: TextStyle(color: c.faint, fontSize: 11)),
+                  ],
                 ]),
                 const SizedBox(height: 2),
                 content,
@@ -2821,10 +2867,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
       return;
     }
     if (!to.isNotif) {
-      // Replying to Vibe: same as a normal message, Gemini sees what you replied to
+      // Replying to a Vibe answer continues THAT conversation, however long ago it was
+      final t = to.thread ?? 't${to.ts}';
+      if (to.thread == null) chat.replace(to, to.inThread(t));
+      _tagLastMine(t);
       final r = Brain.handle(text, _apps);
-      if (!r.sure && Gemini.enabled) {
-        await _askGemini(text);
+      if (r.sure && r.act != Act.none) {
+        await _doLocal(r);
+      } else if (Gemini.enabled || _nano == 'available') {
+        await _askGemini(text, thread: t);
       } else {
         await _doLocal(r);
       }
