@@ -872,7 +872,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
           ]),
         );
 
-    Widget pill(String label, VoidCallback? onTap, {bool primary = false}) => Padding(
+    Widget actionPill(String label, VoidCallback? onTap, {bool primary = false}) => Padding(
           padding: const EdgeInsets.only(right: 8, top: 8),
           child: Material(
             color: primary ? VC.blurple : c.input,
@@ -953,7 +953,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
             ),
           Wrap(children: [
           for (final b in List<Map>.from(card['buttons'] ?? const []))
-            pill('${b['label']}', done ? null : () => _onAsk(m, '${b['do']}'), primary: b['primary'] == true),
+            actionPill('${b['label']}', done ? null : () => _onAsk(m, '${b['do']}'), primary: b['primary'] == true),
           ]),
         ]);
       case 'models':

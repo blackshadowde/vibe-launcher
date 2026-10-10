@@ -465,7 +465,7 @@ class _TelegramChatPageState extends State<TelegramChatPage> {
                       final newDay = ot == null || !sameDay(ot, t);
                       final name = tg.senderName(m);
                       final head = newDay || older == null || tg.senderName(older) != name ||
-                          t.difference(ot!).inMinutes > 5;
+                          t.difference(ot).inMinutes > 5;
                       final row = _bubble(c, m, name, t, head);
                       return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                         if (newDay)
