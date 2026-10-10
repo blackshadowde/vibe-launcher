@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Shown for a moment while Vibe starts: plain Vibe background (dark or light), no white flash -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@color/vibe_launch_bg" />
+</layer-list>
