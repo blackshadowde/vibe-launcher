@@ -5,7 +5,9 @@ import android.app.PendingIntent
 import android.app.RemoteInput
 import android.app.SearchManager
 import android.app.role.RoleManager
+import android.Manifest
 import android.content.ComponentName
+import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -24,6 +26,10 @@ import android.os.Handler
 import android.os.Looper
 import android.os.StatFs
 import android.provider.AlarmClock
+import android.provider.CallLog
+import android.provider.ContactsContract
+import android.telephony.SmsManager
+import android.telephony.TelephonyManager
 import android.provider.MediaStore
 import android.provider.Settings
 import android.service.notification.NotificationListenerService
@@ -38,6 +44,14 @@ class MainActivity : FlutterActivity() {
     private val channelName = "vibe/launcher"
     private var channel: MethodChannel? = null
     private var listenResult: MethodChannel.Result? = null
+    private var permResult: MethodChannel.Result? = null
+    private val permCode = 4722
+    private val peoplePerms = arrayOf(
+        Manifest.permission.READ_CONTACTS,
+        Manifest.permission.READ_CALL_LOG,
+        Manifest.permission.CALL_PHONE,
+        Manifest.permission.SEND_SMS
+    )
     private val listenCode = 4721
 
     override fun configureFlutterEngine(engine: FlutterEngine) {
@@ -120,6 +134,62 @@ class MainActivity : FlutterActivity() {
                 "mediaControl" -> result.success(
                     VibeNotifService.instance?.control(call.argument<String>("package"), call.argument<String>("action") ?: "toggle") ?: false
                 )
+                // ---------- People ----------
+                "peoplePerms" -> result.success(permMap())
+                "requestPeople" -> {
+                    if (peoplePerms.all { has(it) }) result.success(permMap()) else {
+                        permResult?.success(permMap())
+                        permResult = result
+                        requestPermissions(peoplePerms, permCode)
+                    }
+                }
+                "contacts" -> Thread {
+                    val l = try { loadContacts() } catch (e: Exception) { emptyList<Map<String, Any>>() }
+                    runOnUiThread { result.success(l) }
+                }.start()
+                "contactPhoto" -> Thread {
+                    val bytes = try { contactPhoto(call.argument<String>("id") ?: "") } catch (e: Exception) { null }
+                    runOnUiThread { result.success(bytes) }
+                }.start()
+                "callLog" -> Thread {
+                    val l = try { callLog(call.argument<Int>("limit") ?: 10) } catch (e: Exception) { emptyList<Map<String, Any>>() }
+                    runOnUiThread { result.success(l) }
+                }.start()
+                "call" -> {
+                    val num = call.argument<String>("number") ?: ""
+                    val uri = Uri.parse("tel:" + Uri.encode(num))
+                    result.success(
+                        if (has(Manifest.permission.CALL_PHONE)) open(Intent(Intent.ACTION_CALL, uri))
+                        else open(Intent(Intent.ACTION_DIAL, uri))
+                    )
+                }
+                "sendSms" -> {
+                    val num = call.argument<String>("number") ?: ""
+                    val text = call.argument<String>("text") ?: ""
+                    result.success(try {
+                        if (!has(Manifest.permission.SEND_SMS)) false else {
+                            val sm = smsManager()
+                            sm.sendMultipartTextMessage(num, null, sm.divideMessage(text), null, null)
+                            true
+                        }
+                    } catch (e: Exception) { false })
+                }
+                "smsApp" -> {
+                    val num = call.argument<String>("number") ?: ""
+                    val i = Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:" + Uri.encode(num)))
+                        .putExtra("sms_body", call.argument<String>("text") ?: "")
+                    result.success(open(i))
+                }
+                "whatsapp" -> {
+                    val d = waNumber(call.argument<String>("number") ?: "")
+                    val text = call.argument<String>("text") ?: ""
+                    val url = "https://api.whatsapp.com/send?phone=$d" + (if (text.isEmpty()) "" else "&text=" + Uri.encode(text))
+                    val i = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                    result.success(
+                        open(Intent(i).setPackage("com.whatsapp")) ||
+                            open(Intent(i).setPackage("com.whatsapp.w4b")) || open(i)
+                    )
+                }
                 "listen" -> {
                     listenResult?.success(null)
                     listenResult = result
@@ -150,6 +220,119 @@ class MainActivity : FlutterActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         if (intent.hasCategory(Intent.CATEGORY_HOME)) channel?.invokeMethod("homePressed", null)
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == permCode) {
+            permResult?.success(permMap())
+            permResult = null
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun smsManager(): SmsManager =
+        if (Build.VERSION.SDK_INT >= 31) getSystemService(SmsManager::class.java) else SmsManager.getDefault()
+
+    private fun has(p: String) = checkSelfPermission(p) == PackageManager.PERMISSION_GRANTED
+
+    private fun permMap(): Map<String, Boolean> = mapOf(
+        "contacts" to has(Manifest.permission.READ_CONTACTS),
+        "calls" to has(Manifest.permission.READ_CALL_LOG),
+        "phone" to has(Manifest.permission.CALL_PHONE),
+        "sms" to has(Manifest.permission.SEND_SMS)
+    )
+
+    private fun loadContacts(): List<Map<String, Any>> {
+        if (!has(Manifest.permission.READ_CONTACTS)) return emptyList()
+        val out = ArrayList<Map<String, Any>>()
+        val seen = HashSet<String>()
+        contentResolver.query(
+            ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+            arrayOf(
+                ContactsContract.CommonDataKinds.Phone.CONTACT_ID,
+                ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME_PRIMARY,
+                ContactsContract.CommonDataKinds.Phone.NUMBER,
+                ContactsContract.CommonDataKinds.Phone.TYPE,
+                ContactsContract.CommonDataKinds.Phone.IS_SUPER_PRIMARY,
+                ContactsContract.CommonDataKinds.Phone.STARRED,
+                ContactsContract.CommonDataKinds.Phone.PHOTO_THUMBNAIL_URI
+            ), null, null, null
+        )?.use { c ->
+            while (c.moveToNext()) {
+                val id = c.getLong(0).toString()
+                val name = c.getString(1) ?: continue
+                val num = c.getString(2) ?: continue
+                val key = id + "|" + num.filter { it.isDigit() }.takeLast(10)
+                if (!seen.add(key)) continue
+                out.add(mapOf(
+                    "id" to id, "name" to name, "number" to num,
+                    "mobile" to (c.getInt(3) == ContactsContract.CommonDataKinds.Phone.TYPE_MOBILE),
+                    "primary" to (c.getInt(4) == 1),
+                    "starred" to (c.getInt(5) == 1),
+                    "photo" to (c.getString(6) != null)
+                ))
+            }
+        }
+        return out
+    }
+
+    private fun contactPhoto(id: String): ByteArray? {
+        if (!has(Manifest.permission.READ_CONTACTS) || id.isEmpty()) return null
+        val uri = ContentUris.withAppendedId(ContactsContract.Contacts.CONTENT_URI, id.toLong())
+        return ContactsContract.Contacts.openContactPhotoInputStream(contentResolver, uri, false)?.use { it.readBytes() }
+    }
+
+    private fun callLog(limit: Int): List<Map<String, Any>> {
+        if (!has(Manifest.permission.READ_CALL_LOG)) return emptyList()
+        val out = ArrayList<Map<String, Any>>()
+        contentResolver.query(
+            CallLog.Calls.CONTENT_URI,
+            arrayOf(CallLog.Calls.NUMBER, CallLog.Calls.CACHED_NAME, CallLog.Calls.TYPE, CallLog.Calls.DATE, CallLog.Calls.DURATION),
+            null, null, CallLog.Calls.DATE + " DESC"
+        )?.use { c ->
+            while (c.moveToNext() && out.size < limit) {
+                val type = when (c.getInt(2)) {
+                    CallLog.Calls.INCOMING_TYPE -> "incoming"
+                    CallLog.Calls.OUTGOING_TYPE -> "outgoing"
+                    CallLog.Calls.MISSED_TYPE -> "missed"
+                    CallLog.Calls.REJECTED_TYPE -> "rejected"
+                    CallLog.Calls.BLOCKED_TYPE -> "blocked"
+                    else -> "other"
+                }
+                out.add(mapOf(
+                    "number" to (c.getString(0) ?: ""),
+                    "name" to (c.getString(1) ?: ""),
+                    "type" to type,
+                    "time" to c.getLong(3),
+                    "duration" to c.getLong(4)
+                ))
+            }
+        }
+        return out
+    }
+
+    /** WhatsApp wants the number with country code and no symbols. */
+    private fun waNumber(raw: String): String {
+        val t = raw.trim()
+        val digits = t.filter { it.isDigit() }
+        if (t.startsWith("+")) return digits
+        if (digits.startsWith("00")) return digits.drop(2)
+        val iso = try {
+            (getSystemService(TELEPHONY_SERVICE) as TelephonyManager).simCountryIso.lowercase()
+        } catch (e: Exception) { "" }
+        val cc = mapOf(
+            "in" to "91", "us" to "1", "ca" to "1", "gb" to "44", "ae" to "971", "sa" to "966", "qa" to "974",
+            "kw" to "965", "om" to "968", "bh" to "973", "sg" to "65", "my" to "60", "ph" to "63", "id" to "62",
+            "pk" to "92", "bd" to "880", "lk" to "94", "np" to "977", "au" to "61", "nz" to "64", "de" to "49",
+            "fr" to "33", "it" to "39", "es" to "34", "nl" to "31", "gr" to "30", "no" to "47", "se" to "46",
+            "dk" to "45", "pl" to "48", "ie" to "353", "tr" to "90", "eg" to "20", "za" to "27", "ng" to "234",
+            "ke" to "254", "cn" to "86", "hk" to "852", "jp" to "81", "kr" to "82", "th" to "66", "vn" to "84",
+            "br" to "55", "mx" to "52", "ru" to "7", "ua" to "380"
+        )[iso] ?: ""
+        val local = digits.trimStart('0')
+        // 10 digits or fewer = local number: add the SIM's country code
+        return if (cc.isNotEmpty() && local.length <= 10) cc + local else local
     }
 
     @Deprecated("Deprecated in Java")
