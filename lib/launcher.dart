@@ -8,7 +8,7 @@ import 'theme.dart';
 
 /// One installed app. In the UI it's a "user" in the DM list.
 /// Shown in settings and when you ask "what version is this".
-const vibeVersion = '0.20.0';
+const vibeVersion = '0.21.0';
 
 class AppEntry {
   final String label, pkg;
@@ -234,6 +234,8 @@ class Prefs extends ChangeNotifier {
   // Pictures (Cloudflare Workers AI, free daily quota)
   String cfAccount = '';
   String cfToken = '';
+  String tgApiId = ''; // Telegram (my.telegram.org), kept in the vault
+  String tgApiHash = '';
   List<int> queue = []; // timestamps of your questions waiting for internet
   int briefHour = 7, briefMinute = 30;
   String city = '';
@@ -293,6 +295,8 @@ class Prefs extends ChangeNotifier {
     try {
       gmailPass = await _secret('gmailPass');
     } catch (_) {}
+    tgApiId = await _secret('tgApiId');
+    tgApiHash = await _secret('tgApiHash');
     queue = (_p.getStringList('queue') ?? []).map(int.parse).toList();
     briefHour = _p.getInt('briefHour') ?? 7;
     briefMinute = _p.getInt('briefMinute') ?? 30;
@@ -360,6 +364,14 @@ class Prefs extends ChangeNotifier {
     cfToken = token.trim();
     _p.setString('cfAccount', cfAccount);
     _vault.write(key: 'cfToken', value: cfToken).catchError((_) {});
+    notifyListeners();
+  }
+
+  void setTelegram(String id, String hash) {
+    tgApiId = id.trim();
+    tgApiHash = hash.trim();
+    _vault.write(key: 'tgApiId', value: tgApiId).catchError((_) {});
+    _vault.write(key: 'tgApiHash', value: tgApiHash).catchError((_) {});
     notifyListeners();
   }
 

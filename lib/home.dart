@@ -17,6 +17,8 @@ import 'day.dart';
 import 'sched.dart';
 import 'profile_sheet.dart';
 import 'settings_page.dart';
+import 'telegram.dart';
+import 'telegram_ui.dart';
 import 'theme.dart';
 import 'widgets.dart';
 
@@ -63,6 +65,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     Native.onShared = _onShared;
     Native.onFired = _onFired;
     appErrors.addListener(_onAppError);
+    Telegram.i.onIncoming = _onTelegram;
+    if (Telegram.i.configured) Telegram.i.start();
     Native.lastCrash().then((t) {
       if (t == null || t.trim().isEmpty || !mounted) return;
       _say('Vibe closed unexpectedly last time. Long-press this message to copy it and send it for a fix:\n\n$t',
@@ -210,6 +214,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
       _say(mem);
       return;
     }
+    if (await _telegramCommands(text)) return;
     if (await _selfCommands(text)) return;
     if (await _appCommands(text)) return;
     if (await _dayCommands(text)) return;
@@ -526,6 +531,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
         if (!await _people(PeopleCmd('call', name: str('name')), preface: preface)) {
           _say('I couldn\'t find "${str('name')}" in your contacts.');
         }
+      case 'message_person' when str('via') == 'telegram':
+        if (preface.isNotEmpty) _say(preface);
+        await _telegramTo(str('name'), str('text'));
       case 'message_person':
         if (!await _people(
             PeopleCmd('message', name: str('name'), text: str('text'), via: str('via') == 'default' ? '' : str('via')),
@@ -924,9 +932,29 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
         );
       case 'ask':
         final done = card['state'] != 'ask';
-        return Wrap(children: [
+        final preview = card['preview']?.toString();
+        return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          if (preview != null)
+            Container(
+              margin: const EdgeInsets.only(top: 6),
+              constraints: const BoxConstraints(maxWidth: 360),
+              decoration: box(),
+              padding: const EdgeInsets.all(12),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                if (card['to'] != null)
+                  Text('To ${card['to']}', style: TextStyle(color: c.faint, fontSize: 12, fontWeight: FontWeight.w700)),
+                Text(preview, style: TextStyle(color: c.text, fontSize: 15)),
+                if (card['state'] == 'sent')
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Text('✓ Sent', style: TextStyle(color: VC.green, fontSize: 12, fontWeight: FontWeight.w700)),
+                  ),
+              ]),
+            ),
+          Wrap(children: [
           for (final b in List<Map>.from(card['buttons'] ?? const []))
             pill('${b['label']}', done ? null : () => _onAsk(m, '${b['do']}'), primary: b['primary'] == true),
+          ]),
         ]);
       case 'models':
         final picked = card['picked']?.toString();
@@ -2006,6 +2034,201 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     }
   }
 
+  // ---------- Telegram inside Vibe ----------
+  /// A Telegram message arrives: it shows up like any app message, but replies go straight to Telegram.
+  void _onTelegram(Map tm) {
+    final tg = Telegram.i;
+    final chatId = Telegram.chatOf(tm);
+    final chatRow = tg.chats[chatId];
+    final sender = tg.senderName(tm);
+    final title = chatRow == null || Telegram.isPrivate(chatRow) ? sender : '$sender · ${tg.chatTitle(chatId)}';
+    final pkg = Telegram.appPackages.firstWhere((p) => _byPkg(p) != null, orElse: () => 'org.telegram.messenger');
+    final atBottom = !_scroll.hasClients || _scroll.offset < 80;
+    chat.add(Msg(false, Telegram.textOf(tm),
+        ts: (((tm['date'] as num?) ?? 0).toInt() * 1000),
+        pkg: pkg,
+        app: 'Telegram',
+        title: title,
+        nkey: 'tg:$chatId:${Telegram.idOf(tm)}',
+        canReply: true));
+    if (atBottom) _toBottom();
+  }
+
+  void _openTelegramChat(int chatId) {
+    _focus.unfocus();
+    navKey.currentState?.push(MaterialPageRoute(builder: (_) => TelegramChatPage(chatId: chatId)));
+  }
+
+  Future<void> _openTelegramLogin() async {
+    _focus.unfocus();
+    final ok = await navKey.currentState?.push<bool>(MaterialPageRoute(builder: (_) => const TelegramLoginPage()));
+    if (ok == true) _say('✅ Telegram connected. Your chats now arrive here, and you can reply by swiping.');
+  }
+
+  void _openTelegramChats() {
+    _focus.unfocus();
+    navKey.currentState?.push(MaterialPageRoute(builder: (_) => const TelegramChatsPage()));
+  }
+
+  /// "telegram chats", "connect telegram", "telegram Ravi I'm late", "message Ravi on telegram hi"
+  Future<bool> _telegramCommands(String text) async {
+    final low = Brain.norm(text);
+    if (!low.contains('telegram') && !low.startsWith('tg ')) return false;
+    if (RegExp(r'^(connect|log ?in to|login to|sign in to|set ?up|add) telegram$|^telegram (login|log in|connect|setup|set up)$').hasMatch(low)) {
+      await _openTelegramLogin();
+      return true;
+    }
+    if (RegExp(r'^(log ?out of|logout of|disconnect|sign out of) telegram$|^telegram (log ?out|logout|disconnect)$').hasMatch(low)) {
+      await Telegram.i.logOut();
+      _say('Logged out of Telegram in Vibe. The Telegram app itself is unchanged.');
+      return true;
+    }
+    if (RegExp(r'^(open |show |my )*telegram( chats| messages)?$|^tg$').hasMatch(low)) {
+      if (!Telegram.i.configured) {
+        // Not set up in Vibe: open the Telegram app as before, and offer to connect
+        final a = Telegram.appPackages.map(_byPkg).whereType<AppEntry>().firstOrNull;
+        if (a != null && !low.contains('chats')) return false;
+        _say('Telegram isn\'t connected to Vibe yet.', card: {
+          'type': 'ask',
+          'state': 'ask',
+          'buttons': [
+            {'label': 'Connect Telegram', 'do': 'tglogin', 'primary': true},
+          ],
+        });
+        return true;
+      }
+      _openTelegramChats();
+      return true;
+    }
+    // Sending
+    final raw = text.trim();
+    final a = RegExp(r'^(?:telegram|tg)\s+(.+)$', caseSensitive: false).firstMatch(raw);
+    final b = RegExp(r'^(?:message|msg|text|send(?: a message to)?)\s+(.+?)\s+(?:on|via|in|through)\s+telegram\b[\s:,-]*(.*)$',
+            caseSensitive: false)
+        .firstMatch(raw);
+    if (b != null) {
+      await _telegramTo(b.group(1)!, b.group(2) ?? '');
+      return true;
+    }
+    if (a != null) {
+      await _telegramTo(a.group(1)!, '', splitName: true);
+      return true;
+    }
+    return false;
+  }
+
+  /// Finds the chat and either opens it (no text) or asks before sending.
+  Future<void> _telegramTo(String who, String text, {bool splitName = false}) async {
+    if (!Telegram.i.configured) {
+      _say('Connect Telegram to Vibe first.', card: {
+        'type': 'ask',
+        'state': 'ask',
+        'buttons': [
+          {'label': 'Connect Telegram', 'do': 'tglogin', 'primary': true},
+        ],
+      });
+      return;
+    }
+    if (!Telegram.i.ready) {
+      await Telegram.i.start();
+      _say('Telegram is still connecting. Try again in a moment.', error: true);
+      return;
+    }
+    setState(() => _thinking = true);
+    Map? chatRow;
+    var msg = text.trim();
+    try {
+      final number = _numberIn(who.split(RegExp(r'\s+')).first) != null && !splitName ? _numberIn(who) : null;
+      if (splitName) {
+        // "telegram Ravi Kumar I'm late": the longest run of first words that's a chat name
+        final words = who.trim().split(RegExp(r'\s+'));
+        final phone = RegExp(r'^(\+?\d[\d\s\-()]{4,}\d)(?:\s+(.*))?$').firstMatch(who.trim());
+        if (phone != null) {
+          chatRow = await Telegram.i.chatForPhone(phone.group(1)!);
+          msg = phone.group(2) ?? '';
+        } else {
+          for (var k = words.length > 4 ? 4 : words.length; k >= 1 && chatRow == null; k--) {
+            final name = words.take(k).join(' ');
+            final local = _localTgChat(name);
+            if (local != null) {
+              chatRow = local;
+              msg = words.skip(k).join(' ');
+            }
+          }
+          if (chatRow == null) {
+            final found = await Telegram.i.findChats(words.first);
+            if (found.isNotEmpty) {
+              chatRow = found.first;
+              msg = words.skip(1).join(' ');
+            }
+          }
+        }
+      } else if (number != null) {
+        chatRow = await Telegram.i.chatForPhone(number);
+      } else {
+        chatRow = _localTgChat(who);
+        if (chatRow == null) {
+          final found = await Telegram.i.findChats(who);
+          if (found.isNotEmpty) chatRow = found.first;
+        }
+      }
+    } finally {
+      if (mounted) setState(() => _thinking = false);
+    }
+    if (chatRow == null) {
+      _say('I couldn\'t find "$who" on Telegram. Try their name as it shows in Telegram, their @username, or their number '
+          '(numbers only work if they allow it in Telegram privacy).');
+      return;
+    }
+    final id = Telegram.idOf(chatRow);
+    final title = '${chatRow['title']}';
+    msg = msg.replaceFirst(RegExp(r'^(that|saying|to say|:|-)\s*', caseSensitive: false), '').trim();
+    if (msg.isEmpty) {
+      _say('Opening $title on Telegram…');
+      await _pause();
+      _openTelegramChat(id);
+      return;
+    }
+    _say('Send this on Telegram?', card: {
+      'type': 'ask',
+      'state': 'ask',
+      'to': title,
+      'chat': id,
+      'preview': msg,
+      'buttons': [
+        {'label': 'Send', 'do': 'tgsend', 'primary': true},
+        {'label': 'Open chat', 'do': 'tgopen'},
+      ],
+    });
+  }
+
+  Map? _localTgChat(String name) {
+    final q = Brain.norm(name);
+    if (q.isEmpty) return null;
+    Map? best;
+    var bestScore = 0;
+    for (final c in Telegram.i.chats.values) {
+      final t = Brain.norm('${c['title']}');
+      final sc = t == q ? 100 : t.startsWith('$q ') ? 90 : t.split(' ').contains(q) ? 80 : 0;
+      if (sc > bestScore) {
+        bestScore = sc;
+        best = c;
+      }
+    }
+    return best;
+  }
+
+  Future<void> _tgSendFromCard(Msg m) async {
+    final card = m.card!;
+    final r = await Telegram.i.sendText((card['chat'] as num).toInt(), '${card['preview']}');
+    if (Telegram.isError(r)) {
+      _setCard(m, Map.from(card)..['state'] = 'ask');
+      _say('Telegram didn\'t send it: ${r['message']}', error: true);
+    } else {
+      _setCard(m, Map.from(card)..['state'] = 'sent');
+    }
+  }
+
   // ---------- Vibe's own settings by chat ----------
   /// "dark mode", "follow system", "check my api keys", "is the offline AI downloaded?", "download offline model"
   Future<bool> _selfCommands(String text) async {
@@ -2210,6 +2433,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
         _showModels();
       case 'cancel':
         _say('Okay. Ask me "download offline model" anytime.');
+      case 'tgsend':
+        _tgSendFromCard(m);
+      case 'tgopen':
+        _openTelegramChat((m.card!['chat'] as num).toInt());
+      case 'tglogin':
+        _openTelegramLogin();
       case 'savekey':
         _saveKey('${m.card!['id']}');
       case 'dropkey':
@@ -3269,6 +3498,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
                             _closeDrawer();
                             _playStore('');
                           },
+                          onTelegram: Telegram.i.configured
+                              ? () {
+                                  _closeDrawer();
+                                  _openTelegramChats();
+                                }
+                              : null,
                           onMissed: () {
                             _closeDrawer();
                             _send('what did I miss?');
@@ -3647,6 +3882,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     final pkg = n['pkg']?.toString();
     if (pkg == null || !prefs.showNotifs || prefs.muted.contains(pkg)) return;
     if (n['type'] == 'media') return _onMedia(n, pkg);
+    // Logged in to Telegram here: its messages come straight from Telegram, not as app notifications
+    if (Telegram.i.ready && Telegram.appPackages.contains(pkg)) return;
     final atBottom = !_scroll.hasClients || _scroll.offset < 80;
     chat.add(Msg(false, (n['text'] ?? '').toString(),
         ts: (n['time'] as num?)?.toInt(),
@@ -3778,6 +4015,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
 
   Future<void> _openNotif(Msg m) async {
     prefs.tap();
+    if (m.nkey?.startsWith('tg:') == true) {
+      _openTelegramChat(int.parse(m.nkey!.split(':')[1]));
+      return;
+    }
     final ok = m.nkey != null && await Native.openNotif(m.nkey!);
     if (!ok) {
       final a = _byPkg(m.pkg!);
@@ -3852,6 +4093,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
       } else {
         await _doLocal(r);
       }
+      return;
+    }
+    if (to.nkey?.startsWith('tg:') == true) {
+      final parts = to.nkey!.split(':');
+      final r = await Telegram.i.sendText(int.parse(parts[1]), text,
+          replyTo: parts.length > 2 ? int.tryParse(parts[2]) : null);
+      if (Telegram.isError(r)) _say('Telegram didn\'t send it: ${r['message']}', error: true);
       return;
     }
     final ok = to.nkey != null && await Native.replyNotif(to.nkey!, text);
@@ -4086,7 +4334,9 @@ class _AppDrawer extends StatefulWidget {
   final String status;
   final void Function(AppEntry) onLaunch;
   final VoidCallback onSearch, onPlayStore, onMissed, onSettings;
+  final VoidCallback? onTelegram;
   const _AppDrawer({
+    this.onTelegram,
     required this.apps,
     required this.loaded,
     required this.status,
@@ -4209,6 +4459,8 @@ class _AppDrawerState extends State<_AppDrawer> {
                               final top = [
                                 if (q.isEmpty)
                                   _navTile(c, Icons.manage_search_rounded, 'Search everything', widget.onSearch),
+                                if (q.isEmpty && widget.onTelegram != null)
+                                  _navTile(c, Icons.send_rounded, 'Telegram chats', widget.onTelegram!),
                                 _section(c, '$title — ${list.length}', widget.onPlayStore),
                               ];
                               return ListView.builder(

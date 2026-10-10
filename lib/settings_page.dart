@@ -9,6 +9,8 @@ import 'gemini.dart';
 import 'launcher.dart';
 import 'memory.dart';
 import 'people.dart';
+import 'telegram.dart';
+import 'telegram_ui.dart';
 import 'theme.dart';
 import 'widgets.dart';
 
@@ -23,6 +25,7 @@ class SettingsPage extends StatelessWidget {
     (Icons.apps_rounded, 'Apps', 'Sorting & hidden apps', {'APPS'}),
     (Icons.notifications_rounded, 'Notifications', 'Notifications in chat, music & muted apps', {'NOTIFICATIONS'}),
     (Icons.contacts_rounded, 'People', 'Contacts, calls, SMS & default messenger', {'PEOPLE'}),
+    (Icons.send_rounded, 'Telegram', 'Your Telegram chats inside Vibe', {'TELEGRAM'}),
     (Icons.manage_search_rounded, 'Search & mail', 'Global search, SMS & files access, Gmail', {'SEARCH'}),
     (Icons.wb_sunny_rounded, 'Daily brief', 'Brief time, city for weather & calendar', {'DAILY BRIEF'}),
     (Icons.auto_awesome_rounded, 'Vibe AI', 'On-phone AI, Gemini, Groq, Cloudflare, backup AI & pictures', {'ON-PHONE AI', 'MAIN AI', 'VIBE AI (GEMINI)', 'GROQ', 'PICTURES'}),
@@ -541,6 +544,56 @@ class SettingsPage extends StatelessWidget {
                   style: TextStyle(color: c.faint, fontSize: 13, height: 1.35)),
             ),
           ]),
+          ],
+          if (show.contains('TELEGRAM')) ...[
+          _section(c, 'TELEGRAM'),
+          ListenableBuilder(
+            listenable: Telegram.i,
+            builder: (context, _) {
+              final tg = Telegram.i;
+              return _group(c, [
+                ListTile(
+                  leading: Icon(Icons.send_rounded, color: tg.ready ? VC.green : c.muted),
+                  title: Text(tg.ready ? 'Connected' : tg.configured ? 'Not logged in' : 'Not connected',
+                      style: TextStyle(color: c.text)),
+                  subtitle: Text(
+                      tg.ready
+                          ? 'Messages arrive in your timeline; swipe to reply'
+                          : 'Log in to read and send Telegram messages in Vibe',
+                      style: TextStyle(color: c.faint)),
+                  trailing: Icon(Icons.chevron_right_rounded, color: c.faint),
+                  onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                      builder: (_) => tg.ready ? const TelegramChatsPage() : const TelegramLoginPage())),
+                ),
+                if (tg.ready)
+                  ListTile(
+                    leading: Icon(Icons.forum_rounded, color: c.muted),
+                    title: Text('Open chats', style: TextStyle(color: c.text)),
+                    onTap: () => Navigator.of(context)
+                        .push(MaterialPageRoute(builder: (_) => const TelegramChatsPage())),
+                  ),
+                ListTile(
+                  leading: Icon(Icons.open_in_new_rounded, color: c.muted),
+                  title: Text('Get your API ID', style: TextStyle(color: c.text)),
+                  subtitle: Text('my.telegram.org → API development tools', style: TextStyle(color: c.faint)),
+                  onTap: () => Native.openUrl('https://my.telegram.org/apps'),
+                ),
+                if (tg.ready)
+                  ListTile(
+                    leading: const Icon(Icons.logout_rounded, color: VC.red),
+                    title: const Text('Log out of Telegram in Vibe', style: TextStyle(color: VC.red)),
+                    subtitle: Text('The Telegram app is not affected', style: TextStyle(color: c.faint)),
+                    onTap: () => tg.logOut(),
+                  ),
+                if (tg.configured && !tg.ready)
+                  ListTile(
+                    leading: const Icon(Icons.key_off_rounded, color: VC.red),
+                    title: const Text('Remove API ID & hash', style: TextStyle(color: VC.red)),
+                    onTap: () => prefs.setTelegram('', ''),
+                  ),
+              ]);
+            },
+          ),
           ],
           if (show.contains('PRIVACY')) ...[
           _section(c, 'PRIVACY'),

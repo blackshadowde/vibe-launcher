@@ -70,12 +70,12 @@ class Gemini {
         _fn('call_person', 'Phone call to someone in the user\'s contacts.',
             {'name': _s('Contact name as the user said it, e.g. "mom" or "Ravi"')}, ['name']),
         _fn('message_person',
-            'Send a message to someone in the user\'s contacts (WhatsApp or SMS). '
+            'Send a message to someone (WhatsApp, SMS, or Telegram when the user says Telegram). '
                 'Write the message text the way the user would, in their language.',
             {
-              'name': _s('Contact name as the user said it'),
+              'name': _s('Contact or Telegram chat name as the user said it'),
               'text': _s('The message to send. Empty to just open the chat'),
-              'via': {'type': 'string', 'enum': ['whatsapp', 'sms', 'default']},
+              'via': {'type': 'string', 'enum': ['whatsapp', 'sms', 'telegram', 'default']},
             },
             ['name']),
         _fn('recent_calls', 'Show recent and missed phone calls.', {}, []),
