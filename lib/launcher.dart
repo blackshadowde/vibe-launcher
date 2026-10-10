@@ -135,8 +135,10 @@ class Native {
   /// Opens Android's voice typing and returns what was said (null if cancelled).
   static Future<String?> listen() => _c.invokeMethod<String>('listen');
 
-  static Future<bool> openUrl(String url) async =>
-      await _c.invokeMethod<bool>('openUrl', {'url': url}) ?? false;
+  static Future<bool> openUrl(String url, {String? pkg}) async =>
+      await _c.invokeMethod<bool>('openUrl', {'url': url, 'package': pkg}) ?? false;
+  static Future<bool> openSettingsPage(String action) async =>
+      await _c.invokeMethod<bool>('openSettingsPage', {'action': action}) ?? false;
   static Future<bool> playMusic(String q, {String? pkg}) async =>
       await _c.invokeMethod<bool>('playMusic', {'query': q, 'package': pkg}) ?? false;
   static Future<bool> setAlarm(int h, int m, String label) async =>

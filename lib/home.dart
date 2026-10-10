@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -85,7 +86,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
           'Hi! I\'m Vibe, your launcher. Tell me what to open, like "open calendar" or just "calendar". '
           'Swipe in from the left edge to see all your apps. Type "help" anytime.'));
     }
-    _input.addListener(() => setState(() {}));
+    _input.addListener(_onTyping);
     _refresh();
   }
 
@@ -172,6 +173,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     final text = raw.trim();
     if (text.isEmpty && _attachImg == null && _attachText == null) return;
     _input.clear();
+    _clearLive();
     prefs.tap();
     if (_attachImg != null || _attachText != null) {
       await _sendAttachment(text);
@@ -190,6 +192,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
       _say(mem);
       return;
     }
+    if (await _appCommands(text)) return;
     if (await _dayCommands(text)) return;
     if (await _schedule(text)) return;
     final cal = CalCmd.parse(text);
@@ -221,6 +224,19 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     if (r.act == Act.clear) {
       chat.clear();
       _say('Chat cleared.');
+      return;
+    }
+    // Opening an app or Settings: the app itself answers
+    if (r.act == Act.open && r.app != null) {
+      _appSays(r.app!.pkg, r.app!.label, 'Opening…');
+      await _pause();
+      _launch(r.app!);
+      return;
+    }
+    if (r.act == Act.phoneSettings) {
+      _appSays(_settingsPkg, 'Settings', 'Opening Settings…', action: {'settings': 'android.settings.SETTINGS'});
+      await _pause();
+      Native.openSettings();
       return;
     }
     _say(r.text, apps: r.app != null ? [r.app!.pkg] : r.choices.map((e) => e.pkg).toList());
@@ -330,7 +346,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
           return;
         }
         final app = found.first.app;
-        _say(say('Opening ${app.label}…'), apps: [app.pkg]);
+        if (preface.isNotEmpty && !preface.toLowerCase().startsWith('opening')) _say(preface);
+        _appSays(app.pkg, app.label, 'Opening…');
         await _pause();
         _launch(app);
       case 'show_all_apps':
@@ -1703,6 +1720,382 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     }
   }
 
+  // ---------- Apps that talk: Play Store, Google, YouTube, Maps, Settings ----------
+  static const _playPkg = 'com.android.vending';
+  static const _chromePkg = 'com.android.chrome';
+  static const _googlePkg = 'com.google.android.googlequicksearchbox';
+  static const _ytPkg = 'com.google.android.youtube';
+  static const _mapsPkg = 'com.google.android.apps.maps';
+  static const _settingsPkg = 'com.android.settings';
+
+  /// Posts a message from an app itself (its icon and name), e.g. Play Store: "Opening search results…".
+  void _appSays(String pkg, String name, String text, {Map? action}) {
+    chat.add(Msg(false, text,
+        pkg: pkg, app: _byPkg(pkg)?.label ?? name, talk: true, card: {'type': 'talk', ...?action}));
+    _toBottom();
+  }
+
+  Future<void> _doTalk(Map a, String pkg) async {
+    prefs.tap();
+    if (a['url'] != null) {
+      await Native.openUrl(a['url'].toString(), pkg: a['open']?.toString());
+    } else if (a['settings'] != null) {
+      await Native.openSettingsPage(a['settings'].toString());
+    } else {
+      final app = _byPkg(pkg);
+      if (app != null) _launch(app);
+    }
+  }
+
+  Future<void> _talkAndOpen(String pkg, String name, String text, Map action) async {
+    _focus.unfocus();
+    _appSays(pkg, name, text, action: action);
+    await _pause();
+    await _doTalk(action, pkg);
+  }
+
+  Future<void> _playStore(String q) async {
+    if (q.isEmpty) {
+      await _talkAndOpen(_playPkg, 'Google Play Store', 'Opening Play Store…', {});
+      return;
+    }
+    await _talkAndOpen(_playPkg, 'Google Play Store', 'Opening search results for "$q"',
+        {'url': 'market://search?q=${Uri.encodeComponent(q)}&c=apps', 'open': _playPkg});
+  }
+
+  Future<void> _google(String q) async {
+    final chrome = _byPkg(_chromePkg) != null;
+    final who = chrome ? _chromePkg : (_byPkg(_googlePkg) != null ? _googlePkg : _chromePkg);
+    await _talkAndOpen(who, chrome ? 'Chrome' : 'Google', 'Searching Google for "$q"',
+        {'url': 'https://www.google.com/search?q=${Uri.encodeComponent(q)}', if (chrome) 'open': _chromePkg});
+  }
+
+  static const _settingsPages = <(String, String, String)>[
+    (r'wi ?fi|wireless', 'android.settings.WIFI_SETTINGS', 'Wi-Fi'),
+    (r'bluetooth|bt', 'android.settings.BLUETOOTH_SETTINGS', 'Bluetooth'),
+    (r'hotspot|tethering|mobile data|sim|network', 'android.settings.WIRELESS_SETTINGS', 'Network'),
+    (r'display|brightness|screen timeout|dark mode', 'android.settings.DISPLAY_SETTINGS', 'Display'),
+    (r'sound|volume|ringtone|vibration', 'android.settings.SOUND_SETTINGS', 'Sound'),
+    (r'battery|power', 'android.intent.action.POWER_USAGE_SUMMARY', 'Battery'),
+    (r'storage|space', 'android.settings.INTERNAL_STORAGE_SETTINGS', 'Storage'),
+    (r'apps?|applications', 'android.settings.APPLICATION_SETTINGS', 'Apps'),
+    (r'notifications?', 'android.settings.NOTIFICATION_SETTINGS', 'Notifications'),
+    (r'location|gps', 'android.settings.LOCATION_SOURCE_SETTINGS', 'Location'),
+    (r'date|time|date and time', 'android.settings.DATE_SETTINGS', 'Date & time'),
+    (r'language|languages|keyboard', 'android.settings.LOCALE_SETTINGS', 'Languages'),
+    (r'developer|developer options', 'android.settings.APPLICATION_DEVELOPMENT_SETTINGS', 'Developer options'),
+    (r'about( phone)?|phone info', 'android.settings.DEVICE_INFO_SETTINGS', 'About phone'),
+    (r'security|lock screen|fingerprint|face unlock', 'android.settings.SECURITY_SETTINGS', 'Security'),
+    (r'accessibility', 'android.settings.ACCESSIBILITY_SETTINGS', 'Accessibility'),
+    (r'nfc', 'android.settings.NFC_SETTINGS', 'NFC'),
+    (r'vpn', 'android.settings.VPN_SETTINGS', 'VPN'),
+    (r'default apps|home app|launcher', 'android.settings.HOME_SETTINGS', 'Home app'),
+  ];
+
+  /// "ps whatsapp", "gg cricket score", "yt lofi", "maps petrol pump", "wifi settings". False = not one of these.
+  Future<bool> _appCommands(String text) async {
+    final t = text.trim();
+    RegExpMatch? m(String re) => RegExp(re, caseSensitive: false).firstMatch(t);
+    final ps = m(r'^(?:ps|playstore|play store|search (?:the )?play ?store(?: for)?|install)(?:\s+(.*))?$');
+    if (ps != null) {
+      await _playStore((ps.group(1) ?? '').trim());
+      return true;
+    }
+    final gg = m(r'^(?:gg|google|google search|search google(?: for)?)\s+(.+)$');
+    if (gg != null) {
+      await _google(gg.group(1)!.trim());
+      return true;
+    }
+    final yt = m(r'^(?:yt|youtube search|search youtube(?: for)?)\s+(.+)$');
+    if (yt != null) {
+      final q = yt.group(1)!.trim();
+      await _talkAndOpen(_ytPkg, 'YouTube', 'Searching YouTube for "$q"',
+          {'url': 'https://www.youtube.com/results?search_query=${Uri.encodeComponent(q)}', 'open': _ytPkg});
+      return true;
+    }
+    final nav = m(r'^(?:navigate to|directions to|take me to)\s+(.+)$');
+    if (nav != null) {
+      final q = nav.group(1)!.trim();
+      await _talkAndOpen(_mapsPkg, 'Maps', 'Starting directions to "$q"',
+          {'url': 'google.navigation:q=${Uri.encodeComponent(q)}', 'open': _mapsPkg});
+      return true;
+    }
+    final map = m(r'^(?:maps?|find on maps?|show on maps?)\s+(.+)$');
+    if (map != null) {
+      final q = map.group(1)!.trim();
+      await _talkAndOpen(_mapsPkg, 'Maps', 'Finding "$q"',
+          {'url': 'geo:0,0?q=${Uri.encodeComponent(q)}', 'open': _mapsPkg});
+      return true;
+    }
+    final low = Brain.norm(t).replaceFirst(RegExp(r'^(open |show |go to )'), '');
+    for (final (re, action, label) in _settingsPages) {
+      // Plain words like "apps" or "battery" need "settings" after them; a few are clear on their own
+      final bare = RegExp(r'^(wi ?fi|bluetooth|hotspot|nfc|vpn|developer options)$').hasMatch(low);
+      if (RegExp('^($re)( settings?| page)?\$').hasMatch(low) && (low.contains('setting') || (bare && !_appNamed(low)))) {
+        await _talkAndOpen(_settingsPkg, 'Settings', 'Opening $label settings…', {'settings': action});
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /// True if an installed app is called exactly this (so "battery" can still open a "Battery" app).
+  bool _appNamed(String n) => _apps.any((a) => Brain.norm(a.label) == n);
+
+  // ---------- Live results while you type ----------
+  String _liveQ = '';
+  List<AppEntry> _lApps = [];
+  List<Person> _lPeople = [];
+  List<Msg> _lMsgs = [];
+  List<Map> _lFiles = [], _lSms = [], _lEvents = [];
+  Timer? _liveT;
+  int _liveGen = 0;
+
+  void _onTyping() {
+    setState(() {});
+    var q = _input.text.trim();
+    // Strip a leading command word so "open whats" or "call rav" still find things
+    final verb = RegExp(r'^(open|launch|call|ring|message|msg|text|whatsapp|find|search|play)\s+', caseSensitive: false)
+        .firstMatch(q);
+    if (verb != null) q = q.substring(verb.end);
+    final off = _replyTo != null || _attachImg != null || _attachText != null || q.length < 2 ||
+        q.split(RegExp(r'\s+')).length > 4 ||
+        RegExp(r'^(ps|gg|yt|remind|remember|forget|what|who|why|how|when|where|is|are|can|tell)\b', caseSensitive: false)
+            .hasMatch(_input.text.trim());
+    if (off) {
+      if (_liveQ.isNotEmpty) setState(_clearLive);
+      return;
+    }
+    if (q == _liveQ) return;
+    final low = q.toLowerCase();
+    setState(() {
+      _liveQ = q;
+      _lApps = Brain.match(Brain.norm(q), _apps).take(4).map((e) => e.app).toList();
+      _lPeople = People.match(q).take(3).map((e) => e.p).toList();
+      _lMsgs = chat.msgs.reversed
+          .where((m) => !m.me && m.text.toLowerCase().contains(low) || (m.title ?? '').toLowerCase().contains(low))
+          .take(3)
+          .toList();
+    });
+    _liveT?.cancel();
+    final gen = ++_liveGen;
+    _liveT = Timer(const Duration(milliseconds: 260), () async {
+      final r = await Future.wait([Native.searchFiles(q), Native.searchSms(q), Native.searchEvents(q)]);
+      if (!mounted || gen != _liveGen) return;
+      setState(() {
+        _lFiles = r[0].take(3).toList();
+        _lSms = r[1].take(2).toList();
+        _lEvents = r[2].take(2).toList();
+      });
+    });
+  }
+
+  void _clearLive() {
+    _liveQ = '';
+    _lApps = [];
+    _lPeople = [];
+    _lMsgs = [];
+    _lFiles = [];
+    _lSms = [];
+    _lEvents = [];
+    _liveGen++;
+  }
+
+  void _liveDone() {
+    _input.clear();
+    setState(_clearLive);
+  }
+
+  /// Results panel that slides up above the message box while you type.
+  Widget _livePanel(VC c) {
+    final any = _lApps.isNotEmpty || _lPeople.isNotEmpty || _lMsgs.isNotEmpty || _lFiles.isNotEmpty ||
+        _lSms.isNotEmpty || _lEvents.isNotEmpty;
+    final show = _liveQ.isNotEmpty && any;
+    final q = _liveQ;
+
+    Widget row(Widget leading, String title, String? sub, VoidCallback onTap, {Widget? trailing}) => InkWell(
+          onTap: () {
+            prefs.tap();
+            onTap();
+          },
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            child: Row(children: [
+              SizedBox(width: 34, height: 34, child: leading),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  _hlText(c, title, q, TextStyle(color: c.text, fontWeight: FontWeight.w600, fontSize: 14.5)),
+                  if (sub != null)
+                    Text(sub, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: c.faint, fontSize: 12)),
+                ]),
+              ),
+              if (trailing != null) trailing,
+            ]),
+          ),
+        );
+    Widget circle(IconData i, {Color? bg, Color? fg}) => Container(
+        decoration: BoxDecoration(color: bg ?? c.card, shape: BoxShape.circle),
+        child: Icon(i, size: 18, color: fg ?? c.muted));
+    Widget chip(IconData i, String label, VoidCallback onTap) => Padding(
+          padding: const EdgeInsets.only(right: 8),
+          child: ActionChip(
+            avatar: Icon(i, size: 16, color: VC.blurple),
+            label: Text(label, style: TextStyle(color: c.text, fontSize: 12.5)),
+            backgroundColor: c.card,
+            side: BorderSide(color: c.divider),
+            onPressed: () {
+              prefs.tap();
+              onTap();
+            },
+          ),
+        );
+
+    final rows = <Widget>[
+      for (final a in _lApps)
+        row(appIcon(a, 34), a.label, 'App', () {
+          _liveDone();
+          _appSays(a.pkg, a.label, 'Opening…');
+          _launch(a);
+        }),
+      for (final p in _lPeople)
+        row(PersonAvatar(name: p.name, person: p, size: 34), p.name, p.number, () {
+          _liveDone();
+          _contactSheet(p);
+        },
+            trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+              IconButton(
+                  visualDensity: VisualDensity.compact,
+                  icon: const Icon(Icons.call_rounded, color: VC.green, size: 20),
+                  onPressed: () {
+                    _liveDone();
+                    _doPeople(PeopleCmd('call', name: p.name), p, '');
+                  }),
+              IconButton(
+                  visualDensity: VisualDensity.compact,
+                  icon: Icon(Icons.chat_rounded, color: VC.blurple, size: 20),
+                  onPressed: () {
+                    _liveDone();
+                    Native.whatsapp(p.number, '');
+                  }),
+            ])),
+      for (final m in _lMsgs)
+        row(m.pkg != null ? _miniAvatar(c, m.pkg, 34) : const BotAvatar(size: 34),
+            Privacy.msg(m) ? '🔒 Private message' : (m.title?.isNotEmpty == true ? '${m.title}: ${m.text}' : m.text),
+            '${m.app ?? 'Vibe'} · ${stamp(DateTime.fromMillisecondsSinceEpoch(m.ts))}', () {
+          if (m.isNotif) _openNotif(m);
+          _liveDone();
+        }),
+      for (final f in _lFiles)
+        row(circle(Icons.description_rounded), f['name'].toString(), 'File', () {
+          _liveDone();
+          Native.openFile(f['uri'].toString(), f['mime'].toString());
+        }),
+      for (final sm in _lSms)
+        row(circle(Icons.sms_rounded),
+            Privacy.text(sm['body'].toString()) ? '🔒 Private SMS' : sm['body'].toString(), 'SMS · ${sm['address']}', () {
+          _liveDone();
+          Native.smsApp(sm['address'].toString(), '');
+        }),
+      for (final e in _lEvents)
+        row(circle(Icons.event_rounded, fg: VC.blurple), e['title'].toString(),
+            stamp(DateTime.fromMillisecondsSinceEpoch((e['begin'] as num?)?.toInt() ?? 0)), () {
+          _liveDone();
+          Native.openEvent((e['id'] as num?)?.toInt() ?? 0);
+        }),
+    ];
+
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 260),
+      switchInCurve: Curves.easeOutCubic,
+      switchOutCurve: Curves.easeInCubic,
+      transitionBuilder: (child, a) => SizeTransition(
+        sizeFactor: a,
+        axisAlignment: 1,
+        child: FadeTransition(
+          opacity: a,
+          child: SlideTransition(
+            position: Tween(begin: const Offset(0, 0.15), end: Offset.zero).animate(a),
+            child: child,
+          ),
+        ),
+      ),
+      child: !show
+          ? const SizedBox(key: ValueKey('none'), width: double.infinity)
+          : Container(
+              key: const ValueKey('live'),
+              margin: const EdgeInsets.fromLTRB(10, 4, 10, 0),
+              constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.36),
+              decoration: BoxDecoration(
+                color: c.pane,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: c.divider),
+                boxShadow: const [BoxShadow(color: Color(0x33000000), blurRadius: 16, offset: Offset(0, 4))],
+              ),
+              clipBehavior: Clip.antiAlias,
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                Flexible(
+                  child: AnimatedSize(
+                    duration: const Duration(milliseconds: 180),
+                    alignment: Alignment.bottomCenter,
+                    child: ListView(
+                      shrinkWrap: true,
+                      reverse: true, // best matches sit next to the message box
+                      padding: const EdgeInsets.symmetric(vertical: 4),
+                      children: rows,
+                    ),
+                  ),
+                ),
+                Container(
+                  height: 1,
+                  color: c.divider,
+                ),
+                SizedBox(
+                  height: 46,
+                  child: ListView(
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    children: [
+                      chip(Icons.manage_search_rounded, 'All results', () {
+                        final qq = q;
+                        _liveDone();
+                        _openSearch(qq);
+                      }),
+                      chip(Icons.shop_rounded, 'Play Store', () {
+                        final qq = q;
+                        _liveDone();
+                        _playStore(qq);
+                      }),
+                      chip(Icons.public_rounded, 'Google', () {
+                        final qq = q;
+                        _liveDone();
+                        _google(qq);
+                      }),
+                    ],
+                  ),
+                ),
+              ]),
+            ),
+    );
+  }
+
+  Widget _hlText(VC c, String text, String q, TextStyle style) {
+    final low = text.toLowerCase(), ql = q.toLowerCase();
+    final i = ql.isEmpty ? -1 : low.indexOf(ql);
+    if (i < 0) return Text(text, maxLines: 1, overflow: TextOverflow.ellipsis, style: style);
+    return Text.rich(
+      TextSpan(style: style, children: [
+        TextSpan(text: text.substring(0, i)),
+        TextSpan(
+            text: text.substring(i, i + q.length),
+            style: TextStyle(backgroundColor: VC.blurple.withValues(alpha: 0.28), fontWeight: FontWeight.w800)),
+        TextSpan(text: text.substring(i + q.length)),
+      ]),
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+    );
+  }
+
   Future<void> _voice() async {
     prefs.tap();
     final t = await Native.listen();
@@ -1751,6 +2144,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
                     if (!_isDefault && _loaded) _defaultBanner(),
                     if (_isDefault && !_notifAccess && _loaded && prefs.showNotifs) _notifBanner(),
                     Expanded(child: _timeline(c)),
+                    _livePanel(c),
                     _inputBar(c),
                   ]),
                 ),
@@ -2016,9 +2410,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
       if (m.me) {
         avatar = Avatar(name: prefs.name, size: 40, dot: false);
         name = prefs.name;
-      } else if (m.isNotif) {
+      } else if (m.pkg != null) {
         // A chat app message from someone in your contacts: their photo with the app as a badge
-        final person = m.media ? null : People.fromTitle(m.title);
+        final person = m.media || m.talk ? null : People.fromTitle(m.title);
         avatar = person != null
             ? PersonAvatar(name: person.name, person: person, size: 40, badge: _miniAvatar(c, m.pkg, 18))
             : _miniAvatar(c, m.pkg, 40);
@@ -2095,8 +2489,17 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
           child: row,
         ),
       );
+    } else if (m.talk) {
+      // An app talking: tap does the same thing again, long-press shows the app menu
+      final app = _byPkg(m.pkg!);
+      row = GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () => _doTalk(m.card ?? const {}, m.pkg!),
+        onLongPress: app == null ? null : () => showAppMenu(context, app, () => _launch(app)),
+        child: row,
+      );
     }
-    final canReply = !m.me && !m.error && (m.media || m.canReply || !m.isNotif);
+    final canReply = !m.me && !m.error && !m.talk && (m.media || m.canReply || !m.isNotif);
     return SwipeReply(
       onReply: canReply ? () => _startReply(m) : null,
       onPassUpdate: _dragUpdate,
