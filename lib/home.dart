@@ -8,6 +8,7 @@ import 'launcher.dart';
 import 'main.dart';
 import 'memory.dart';
 import 'people.dart';
+import 'sched.dart';
 import 'profile_sheet.dart';
 import 'settings_page.dart';
 import 'theme.dart';
@@ -48,6 +49,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     Native.onHomePressed = _goHome;
     Native.onNotification = _onNotif;
     Native.onShared = _onShared;
+    Native.onFired = _onFired;
     Native.takeShared().then((s) {
       if (s != null) _onShared(s);
     });
@@ -94,6 +96,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     });
     for (final n in await Native.drainNotifs()) {
       _onNotif(n);
+    }
+    for (final f in await Native.takeFired()) {
+      _onFired(f);
     }
   }
 
@@ -154,6 +159,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
       _say(mem);
       return;
     }
+    if (await _schedule(text)) return;
     final pc = People.parse(text);
     if (pc != null && await _people(pc)) return;
     final r = Brain.handle(text, _apps);
@@ -358,6 +364,26 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
             preface: preface)) {
           _say('I couldn\'t find "${str('name')}" in your contacts.');
         }
+      case 'set_reminder':
+        final at = DateTime.tryParse(str('time'));
+        if (at == null || !at.isAfter(DateTime.now())) {
+          _say('I couldn\'t work out when. Try "remind me at 6pm to…".');
+        } else {
+          await _addReminder(str('text').isEmpty ? 'Reminder' : str('text'), at, preface: preface);
+        }
+      case 'schedule_message':
+        final at = DateTime.tryParse(str('time'));
+        if (at == null || !at.isAfter(DateTime.now())) {
+          _say('I couldn\'t work out when to send it.');
+        } else if (!await _offerScheduledMessage(
+            PeopleCmd('message', name: str('name'), text: str('text'), via: str('via') == 'default' ? '' : str('via')),
+            at)) {
+          _say('I couldn\'t find "${str('name')}" in your contacts.');
+        }
+      case 'list_reminders':
+        await _listSched();
+      case 'cancel_reminder':
+        await _cancelByText(str('about'));
       case 'remember':
         final f = memory.add(str('fact'));
         _say(preface.isNotEmpty ? preface : 'Got it. I\'ll remember: $f');
@@ -564,7 +590,172 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
           ),
         );
 
+    final state = (card['state'] ?? '').toString();
+    Widget pill(String label, Color col) => Text(label, style: TextStyle(color: col, fontWeight: FontWeight.w700));
+    DateTime atOf(Map d) => DateTime.fromMillisecondsSinceEpoch((d['at'] as num?)?.toInt() ?? 0);
+
     switch (card['type']) {
+      case 'sched':
+        return Container(
+          margin: const EdgeInsets.only(top: 6),
+          constraints: const BoxConstraints(maxWidth: 340),
+          decoration: box(),
+          padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
+          child: Row(children: [
+            Container(
+              width: 36,
+              height: 36,
+              decoration: BoxDecoration(color: VC.yellow.withValues(alpha: 0.18), shape: BoxShape.circle),
+              child: const Icon(Icons.alarm_rounded, color: VC.yellow, size: 20),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(card['text'].toString(),
+                    style: TextStyle(
+                        color: c.text,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 15,
+                        decoration: state == 'cancelled' ? TextDecoration.lineThrough : null)),
+                Text(stamp(atOf(card)), style: TextStyle(color: c.faint, fontSize: 12)),
+              ]),
+            ),
+            if (state == 'active')
+              TextButton(
+                onPressed: () async {
+                  await Native.cancelSched(card['id'].toString());
+                  _markSched(card['id'].toString(), 'cancelled');
+                },
+                child: const Text('Cancel', style: TextStyle(color: VC.red)),
+              )
+            else
+              Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: pill(state == 'done' ? '✓ Done' : 'Cancelled', state == 'done' ? VC.green : c.faint),
+              ),
+          ]),
+        );
+      case 'schedmsg':
+        final at = atOf(card);
+        return Container(
+          margin: const EdgeInsets.only(top: 6),
+          constraints: const BoxConstraints(maxWidth: 340),
+          decoration: box(),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            personRow(card, sub: '${card['via'] == 'sms' ? 'SMS' : 'WhatsApp'} · ${stamp(at)}'),
+            if ((card['text'] ?? '').toString().isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+                child: Text(card['text'].toString(), style: TextStyle(color: c.text, fontSize: 15, height: 1.35)),
+              ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+              child: state == 'ask'
+                  ? Row(children: [
+                      Expanded(
+                        child: FilledButton.icon(
+                          style: FilledButton.styleFrom(backgroundColor: VC.blurple, minimumSize: const Size(0, 38)),
+                          icon: const Icon(Icons.schedule_send_rounded, size: 18),
+                          label: Text('Schedule · ${clock(at)}'),
+                          onPressed: () => _confirmScheduledMessage(m),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      OutlinedButton(
+                        style: OutlinedButton.styleFrom(minimumSize: const Size(0, 38)),
+                        onPressed: () {
+                          chat.replace(m, Msg(false, m.text, ts: m.ts, card: Map.from(card)..['state'] = 'now'));
+                          _doPeople(
+                              PeopleCmd('message', name: card['name'].toString(), text: card['text'].toString(),
+                                  via: card['via'].toString()),
+                              _personOf(card),
+                              '');
+                        },
+                        child: Text('Send now', style: TextStyle(color: c.text)),
+                      ),
+                    ])
+                  : Row(children: [
+                      Padding(
+                        padding: const EdgeInsets.only(left: 4),
+                        child: state == 'scheduled'
+                            ? pill(card['via'] == 'sms' ? '⏰ Sends ${When.label(at)}' : '⏰ I\'ll ping you ${When.label(at)}',
+                                VC.yellow)
+                            : state == 'done'
+                                ? pill('✓ Done', VC.green)
+                                : state == 'now'
+                                    ? pill('Sent now instead', c.faint)
+                                    : pill('Cancelled', c.faint),
+                      ),
+                      const Spacer(),
+                      if (state == 'scheduled')
+                        TextButton(
+                          onPressed: () async {
+                            await Native.cancelSched(card['id'].toString());
+                            _markSched(card['id'].toString(), 'cancelled');
+                          },
+                          child: const Text('Cancel', style: TextStyle(color: VC.red)),
+                        ),
+                    ]),
+            ),
+          ]),
+        );
+      case 'sendnow':
+        return Container(
+          margin: const EdgeInsets.only(top: 6),
+          constraints: const BoxConstraints(maxWidth: 340),
+          decoration: box(),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            personRow(card, sub: 'WhatsApp'),
+            if ((card['text'] ?? '').toString().isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+                child: Text(card['text'].toString(), style: TextStyle(color: c.text, fontSize: 15, height: 1.35)),
+              ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+              child: SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                  style: FilledButton.styleFrom(backgroundColor: VC.green, minimumSize: const Size(0, 38)),
+                  icon: const Icon(Icons.send_rounded, size: 18),
+                  label: const Text('Open WhatsApp to send'),
+                  onPressed: () => Native.whatsapp(card['number'].toString(), card['text'].toString()),
+                ),
+              ),
+            ),
+          ]),
+        );
+      case 'schedlist':
+        final items = List<Map>.from(card['items'] ?? const []);
+        return Container(
+          margin: const EdgeInsets.only(top: 6),
+          constraints: const BoxConstraints(maxWidth: 340),
+          decoration: box(),
+          child: Column(children: [
+            for (final d in items)
+              ListTile(
+                dense: true,
+                leading: Icon(d['type'] == 'message' ? Icons.schedule_send_rounded : Icons.alarm_rounded,
+                    color: VC.yellow),
+                title: Text(
+                    d['type'] == 'message' ? 'Message ${d['name']}: ${d['text']}' : d['text'].toString(),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(color: c.text, fontWeight: FontWeight.w600)),
+                subtitle: Text(stamp(atOf(d)), style: TextStyle(color: c.faint, fontSize: 12)),
+                trailing: IconButton(
+                  icon: Icon(Icons.close_rounded, color: c.faint),
+                  onPressed: () async {
+                    await Native.cancelSched(d['id'].toString());
+                    _markSched(d['id'].toString(), 'cancelled');
+                    final left = items.where((e) => e['id'] != d['id']).toList();
+                    chat.replace(m, Msg(false, left.isEmpty ? 'Nothing scheduled.' : m.text, ts: m.ts,
+                        card: left.isEmpty ? null : (Map.from(card)..['items'] = left)));
+                  },
+                ),
+              ),
+          ]),
+        );
       case 'contact':
         final p = _personOf(card);
         return Container(
@@ -597,7 +788,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
           ]),
         );
       case 'sms':
-        final state = card['state'];
         return Container(
           margin: const EdgeInsets.only(top: 6),
           constraints: const BoxConstraints(maxWidth: 340),
@@ -853,6 +1043,154 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
       ),
       transitionBuilder: (ctx, a, _, child) => FadeTransition(opacity: a, child: child),
     );
+  }
+
+  // ---------- Reminders & scheduled messages ----------
+  /// Handles "remind me…", "my reminders", and messages/calls with a time in them. False = not for us.
+  Future<bool> _schedule(String text) async {
+    if (isListCmd(text)) {
+      await _listSched();
+      return true;
+    }
+    final rc = ReminderCmd.parse(text);
+    if (rc != null) {
+      if (rc.at == null) {
+        if (Gemini.enabled) return false; // Gemini is better with tricky times
+        _say('When should I remind you? Try "remind me at 6pm to call mom" or "remind me in 20 minutes".');
+        return true;
+      }
+      await _addReminder(rc.text, rc.at!);
+      return true;
+    }
+    final w = When.find(text);
+    if (w == null) return false;
+    final pc = People.parse(w.rest);
+    if (pc == null || pc.action == 'calls') return false;
+    if (pc.action == 'call') {
+      if (!await People.ensure()) return false;
+      final found = People.match(pc.name);
+      if (found.isEmpty) return false;
+      await _addReminder('Call ${found.first.p.name}', w.at);
+      return true;
+    }
+    return _offerScheduledMessage(pc, w.at);
+  }
+
+  Future<void> _addReminder(String text, DateTime at, {String preface = ''}) async {
+    final id = 'r${DateTime.now().millisecondsSinceEpoch}';
+    final exact = await Native.schedule({'id': id, 'type': 'reminder', 'at': at.millisecondsSinceEpoch, 'text': text});
+    Native.requestPostNotif();
+    _say(preface.isNotEmpty ? preface : 'I\'ll remind you ${When.label(at)}.',
+        card: {'type': 'sched', 'id': id, 'kind': 'reminder', 'text': text, 'at': at.millisecondsSinceEpoch, 'state': 'active'});
+    if (!exact) {
+      _say('Your phone may ring it a few minutes late. Allow "Alarms & reminders" for Vibe in Android settings for exact timing.');
+    }
+  }
+
+  /// Asks first: schedule for later, or send now? (The time might be part of the message.)
+  Future<bool> _offerScheduledMessage(PeopleCmd pc, DateTime at) async {
+    if (!await People.ensure()) {
+      _say('I need permission to see your contacts for that.', error: true);
+      return true;
+    }
+    final found = People.match(pc.name);
+    if (found.isEmpty) return false;
+    final p = found.first.p;
+    final via = pc.via.isNotEmpty ? pc.via : prefs.messenger;
+    _say('Schedule this message?', card: {
+      'type': 'schedmsg',
+      ..._contactMap(p),
+      'text': pc.text,
+      'via': via,
+      'at': at.millisecondsSinceEpoch,
+      'state': 'ask',
+    });
+    return true;
+  }
+
+  Future<void> _confirmScheduledMessage(Msg m) async {
+    final card = Map.from(m.card!);
+    final id = 's${DateTime.now().millisecondsSinceEpoch}';
+    await Native.schedule({
+      'id': id,
+      'type': 'message',
+      'at': card['at'],
+      'text': card['text'],
+      'name': card['name'],
+      'number': card['number'],
+      'via': card['via'],
+    });
+    Native.requestPostNotif();
+    card['state'] = 'scheduled';
+    card['id'] = id;
+    chat.replace(m, Msg(false, m.text, ts: m.ts, card: card));
+  }
+
+  Future<void> _listSched() async {
+    final items = (await Native.listSched()).toList()
+      ..sort((a, b) => ((a['at'] as num?) ?? 0).compareTo((b['at'] as num?) ?? 0));
+    if (items.isEmpty) {
+      _say('Nothing scheduled.');
+      return;
+    }
+    _say('Coming up:', card: {'type': 'schedlist', 'items': items});
+  }
+
+  Future<void> _cancelByText(String about) async {
+    final words = Brain.norm(about).split(' ').where((w) => w.length > 2).toSet();
+    final items = await Native.listSched();
+    Map? best;
+    var bestScore = 0;
+    for (final it in items) {
+      final t = Brain.norm('${it['text']} ${it['name'] ?? ''}').split(' ').toSet();
+      final sc = words.where(t.contains).length;
+      if (sc > bestScore) {
+        best = it;
+        bestScore = sc;
+      }
+    }
+    if (best == null) {
+      _say('I couldn\'t find that reminder.');
+      return;
+    }
+    await Native.cancelSched(best['id'].toString());
+    _markSched(best['id'].toString(), 'cancelled');
+    _say('Cancelled: ${best['text']}');
+  }
+
+  /// Updates the original card (e.g. to "Done" or "Cancelled").
+  void _markSched(String id, String state) {
+    for (final m in chat.msgs.reversed) {
+      if (m.card?['id'] == id) {
+        chat.replace(m, Msg(false, m.text, ts: m.ts, card: Map.from(m.card!)..['state'] = state));
+        return;
+      }
+    }
+  }
+
+  void _onFired(Map f) {
+    final id = f['id']?.toString() ?? '';
+    _markSched(id, 'done');
+    final text = (f['text'] ?? '').toString();
+    final name = (f['name'] ?? '').toString();
+    if (f['type'] == 'message') {
+      if (f['via'] == 'sms') {
+        f['sent'] == true
+            ? _say('✓ Sent your scheduled SMS to $name: "$text"')
+            : _say('Your scheduled SMS to $name didn\'t go out.', error: true);
+      } else {
+        _say('💬 Time to send your message to $name.', card: {
+          'type': 'sendnow',
+          'id': f['id'],
+          'name': name,
+          'number': f['number'],
+          'text': text,
+          'state': 'ask',
+        });
+      }
+    } else {
+      _say('⏰ $text');
+    }
   }
 
   Future<void> _voice() async {

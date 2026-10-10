@@ -154,6 +154,7 @@ class Brain {
       '• "pause", "play", "next", "previous" for music\n'
       '• "call mom", "message Ravi I\'ll be late", "whatsapp Priya hi", "who called me?"\n'
       '• "remember my brother is Ravi", "what do you remember", "forget …"\n'
+      '• "remind me at 6pm to call mom", "remind me in 20 minutes", "message Ravi happy birthday at 12 tonight", "my reminders"\n'
       '• Tap + for Camera or Photos and ask about a picture, or share anything to Vibe from any app\n'
       '• Long-press my avatar for your recent apps\n'
       'Notifications show up here: tap Reply to answer, long-press to mute an app.\n'
@@ -304,10 +305,11 @@ String dayLabel(DateTime t) {
   final now = DateTime.now();
   if (sameDay(t, now)) return 'Today';
   if (sameDay(t, now.subtract(const Duration(days: 1)))) return 'Yesterday';
+  if (sameDay(t, now.add(const Duration(days: 1)))) return 'Tomorrow';
   return '${t.day}/${t.month}/${t.year}';
 }
 
 String stamp(DateTime t) {
   final d = dayLabel(t);
-  return d == 'Today' || d == 'Yesterday' ? '$d at ${clock(t)}' : '$d ${clock(t)}';
+  return d == 'Today' || d == 'Yesterday' || d == 'Tomorrow' ? '$d at ${clock(t)}' : '$d ${clock(t)}';
 }

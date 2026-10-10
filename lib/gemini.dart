@@ -61,6 +61,20 @@ class Gemini {
             },
             ['name']),
         _fn('recent_calls', 'Show recent and missed phone calls.', {}, []),
+        _fn('set_reminder', 'Set a reminder that pings the user at a time.', {
+          'text': _s('What to remind about, short, e.g. "Call mom"'),
+          'time': _s('Local date-time in ISO 8601 without timezone, e.g. 2026-10-10T18:00:00'),
+        }, ['text', 'time']),
+        _fn('schedule_message',
+            'Schedule a message to someone in the contacts for a later time (the user confirms it).', {
+          'name': _s('Contact name as the user said it'),
+          'text': _s('The message'),
+          'time': _s('Local date-time in ISO 8601 without timezone'),
+          'via': {'type': 'string', 'enum': ['whatsapp', 'sms', 'default']},
+        }, ['name', 'text', 'time']),
+        _fn('list_reminders', 'Show upcoming reminders and scheduled messages.', {}, []),
+        _fn('cancel_reminder', 'Cancel a reminder or scheduled message.',
+            {'about': _s('Words that identify it')}, ['about']),
         _fn('remember',
             'Save a lasting fact about the user or people in their life, when they ask you to remember '
                 'something or clearly tell you such a fact (e.g. "my brother is Ravi", "I\'m vegetarian").',

@@ -18,12 +18,14 @@ class Native {
   static VoidCallback? onHomePressed;
   static void Function(Map)? onNotification;
   static void Function(Map)? onShared;
+  static void Function(Map)? onFired;
 
   static void init() {
     _c.setMethodCallHandler((call) async {
       if (call.method == 'homePressed') onHomePressed?.call();
       if (call.method == 'notif' && call.arguments is Map) onNotification?.call(call.arguments as Map);
       if (call.method == 'shared' && call.arguments is Map) onShared?.call(call.arguments as Map);
+      if (call.method == 'fired' && call.arguments is Map) onFired?.call(call.arguments as Map);
     });
   }
 
@@ -34,6 +36,13 @@ class Native {
       await _c.invokeMethod<bool>('replyNotif', {'key': key, 'text': text}) ?? false;
   static Future<bool> mediaControl(String? pkg, String action) async =>
       await _c.invokeMethod<bool>('mediaControl', {'package': pkg, 'action': action}) ?? false;
+  // Reminders & scheduled messages
+  static Future<bool> schedule(Map item) async => await _c.invokeMethod<bool>('schedule', item) ?? false;
+  static Future<void> cancelSched(String id) => _c.invokeMethod('cancelSched', {'id': id});
+  static Future<List<Map>> listSched() async => await _c.invokeListMethod<Map>('listSched') ?? [];
+  static Future<List<Map>> takeFired() async => await _c.invokeListMethod<Map>('takeFired') ?? [];
+  static Future<void> requestPostNotif() => _c.invokeMethod('requestPostNotif');
+
   static Future<Map?> takeShared() => _c.invokeMapMethod('takeShared');
   static Future<String> filesDir() async => await _c.invokeMethod<String>('filesDir') ?? '';
 
