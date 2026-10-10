@@ -185,6 +185,70 @@ class MainActivity : FlutterActivity() {
                     open(Intent(call.argument<String>("action") ?: Settings.ACTION_SETTINGS)) ||
                         open(Intent(Settings.ACTION_SETTINGS))
                 )
+                // ---------- Vibe's own music player (songs on this phone) ----------
+                "requestAudio" -> {
+                    if (has(audioPerm)) result.success(permMap()) else {
+                        permResult?.success(permMap())
+                        permResult = result
+                        requestPermissions(arrayOf(audioPerm), permCode)
+                    }
+                }
+                "searchSongs" -> Thread {
+                    val l = try { searchSongs(call.argument<String>("q") ?: "", call.argument<String>("by") ?: "any") }
+                        catch (e: Throwable) { emptyList<Map<String, Any>>() }
+                    runOnUiThread { try { result.success(l) } catch (_: Throwable) {} }
+                }.start()
+                "songArt" -> Thread {
+                    val b = try { songArt(call.argument<String>("uri") ?: "") } catch (e: Throwable) { null }
+                    runOnUiThread { try { result.success(b) } catch (_: Throwable) {} }
+                }.start()
+                "playSongs" -> {
+                    val songs = call.argument<List<Map<String, Any?>>>("songs") ?: emptyList()
+                    val index = call.argument<Int>("index") ?: 0
+                    withPlayer { c ->
+                        val items = songs.map { m ->
+                            val uri = (m["uri"] ?: "").toString()
+                            androidx.media3.common.MediaItem.Builder()
+                                .setUri(uri)
+                                .setMediaId(uri)
+                                .setMediaMetadata(
+                                    androidx.media3.common.MediaMetadata.Builder()
+                                        .setTitle((m["title"] ?: "").toString())
+                                        .setArtist((m["artist"] ?: "").toString())
+                                        .setAlbumTitle((m["album"] ?: "").toString())
+                                        .setArtworkUri((m["art"] as? String)?.let { Uri.parse(it) })
+                                        .build()
+                                ).build()
+                        }
+                        c.setMediaItems(items, index.coerceIn(0, (items.size - 1).coerceAtLeast(0)), 0L)
+                        c.prepare()
+                        c.play()
+                    }
+                    result.success(true)
+                }
+                "playerCmd" -> {
+                    val a = call.argument<String>("action") ?: ""
+                    val ms = (call.argument<Number>("ms") ?: 0).toLong()
+                    withPlayer { c ->
+                        when (a) {
+                            "play" -> c.play()
+                            "pause" -> c.pause()
+                            "toggle" -> if (c.isPlaying) c.pause() else c.play()
+                            "next" -> if (c.hasNextMediaItem()) c.seekToNextMediaItem()
+                            "previous" -> if (c.currentPosition > 4000 || !c.hasPreviousMediaItem()) c.seekTo(0) else c.seekToPreviousMediaItem()
+                            "seek" -> c.seekTo(ms)
+                            "stop" -> { c.stop(); c.clearMediaItems() }
+                        }
+                    }
+                    result.success(true)
+                }
+                "playerState" -> result.success(player?.let { playerMap(it) })
+                // ---------- Streaming apps: play by search in the background, without opening them ----------
+                "playSilently" -> playSilently(call.argument<String>("query") ?: "", call.argument<String>("package"), result)
+                "musicApp" -> {
+                    val p = musicApp()
+                    result.success(p?.let { mapOf("package" to it, "label" to labelOf(it)) })
+                }
                 "playMusic" -> {
                     val q = call.argument<String>("query") ?: ""
                     val i = Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH)
@@ -405,6 +469,32 @@ class MainActivity : FlutterActivity() {
                     } catch (e: Exception) { docResult = null; result.success(null) }
                 }
                 "nanoStatus" -> scope.launch { result.success(nanoStatus()) }
+                // Why the on-phone AI isn't ready: the exact status / error, and the AICore app versions
+                "nanoInfo" -> scope.launch {
+                    var status = "unknown"
+                    var err = ""
+                    if (nano == null) {
+                        status = "no client"
+                        err = try { Generation.getClient(); "" } catch (e: Throwable) { e.toString() }
+                    } else {
+                        try {
+                            status = when (val st = nano!!.checkStatus()) {
+                                FeatureStatus.AVAILABLE -> "available"
+                                FeatureStatus.DOWNLOADABLE -> "downloadable"
+                                FeatureStatus.DOWNLOADING -> "downloading"
+                                FeatureStatus.UNAVAILABLE -> "unavailable"
+                                else -> "status $st"
+                            }
+                        } catch (e: Throwable) { status = "error"; err = e.toString().take(300) }
+                    }
+                    fun ver(p: String) = try { packageManager.getPackageInfo(p, 0).versionName ?: "?" } catch (_: Throwable) { "not installed" }
+                    result.success(mapOf(
+                        "status" to status, "error" to err,
+                        "aicore" to ver("com.google.android.aicore"),
+                        "pcs" to ver("com.google.android.as.oss"),
+                        "model" to Build.MODEL
+                    ))
+                }
                 "nanoDownload" -> scope.launch {
                     var ok = false
                     var total = 0L
@@ -757,6 +847,143 @@ class MainActivity : FlutterActivity() {
         return uri.toString()
     }
 
+    // ---------------- Vibe player (Media3) ----------------
+    private var player: androidx.media3.session.MediaController? = null
+    private val pendingPlayer = ArrayList<(androidx.media3.session.MediaController) -> Unit>()
+    private var connecting = false
+
+    private fun withPlayer(block: (androidx.media3.session.MediaController) -> Unit) {
+        player?.let { block(it); return }
+        pendingPlayer.add(block)
+        if (connecting) return
+        connecting = true
+        val token = androidx.media3.session.SessionToken(this, ComponentName(this, VibePlayerService::class.java))
+        val f = androidx.media3.session.MediaController.Builder(this, token).buildAsync()
+        val main = Handler(Looper.getMainLooper())
+        f.addListener({
+            connecting = false
+            try {
+                val c = f.get()
+                player = c
+                c.addListener(object : androidx.media3.common.Player.Listener {
+                    override fun onEvents(p: androidx.media3.common.Player, events: androidx.media3.common.Player.Events) {
+                        try { channel?.invokeMethod("player", playerMap(c)) } catch (_: Throwable) {}
+                    }
+                })
+                val todo = ArrayList(pendingPlayer)
+                pendingPlayer.clear()
+                for (b in todo) try { b(c) } catch (_: Throwable) {}
+            } catch (_: Throwable) { pendingPlayer.clear() }
+        }, java.util.concurrent.Executor { r -> main.post(r) })
+    }
+
+    private fun playerMap(c: androidx.media3.session.MediaController): Map<String, Any?> {
+        val md = c.mediaMetadata
+        return mapOf(
+            "playing" to c.isPlaying,
+            "ready" to (c.mediaItemCount > 0),
+            "title" to (md.title?.toString() ?: ""),
+            "artist" to (md.artist?.toString() ?: ""),
+            "art" to md.artworkUri?.toString(),
+            "uri" to (c.currentMediaItem?.mediaId ?: ""),
+            "pos" to c.currentPosition,
+            "dur" to (if (c.duration > 0) c.duration else 0L),
+            "index" to c.currentMediaItemIndex,
+            "count" to c.mediaItemCount
+        )
+    }
+
+    private fun searchSongs(q: String, by: String): List<Map<String, Any>> {
+        if (!has(audioPerm)) return emptyList()
+        val a = android.provider.MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+        val cols = arrayOf("_id", "title", "artist", "album", "album_id", "duration")
+        val like = "%" + q.replace("%", "").replace("_", "") + "%"
+        val (sel, args) = when (by) {
+            "downloads" -> (if (Build.VERSION.SDK_INT >= 29) "relative_path LIKE ?" else "_data LIKE ?") to arrayOf("%Vibe Telegram%")
+            "artist" -> "artist LIKE ? AND duration > 30000" to arrayOf(like)
+            "all" -> "is_music != 0 AND duration > 30000" to arrayOf<String>()
+            else -> "(title LIKE ? OR artist LIKE ? OR album LIKE ?) AND duration > 30000" to arrayOf(like, like, like)
+        }
+        val out = ArrayList<Map<String, Any>>()
+        contentResolver.query(a, cols, sel, args, "title COLLATE NOCASE ASC")?.use { c ->
+            while (c.moveToNext() && out.size < 300) {
+                out.add(mapOf(
+                    "uri" to ContentUris.withAppendedId(a, c.getLong(0)).toString(),
+                    "title" to (c.getString(1) ?: "Unknown"),
+                    "artist" to (c.getString(2)?.takeIf { it != "<unknown>" } ?: ""),
+                    "album" to (c.getString(3) ?: ""),
+                    "art" to "content://media/external/audio/albumart/${c.getLong(4)}",
+                    "duration" to c.getLong(5)
+                ))
+            }
+        }
+        return out
+    }
+
+    private fun songArt(uri: String): ByteArray? {
+        val u = Uri.parse(uri)
+        val bmp = if (Build.VERSION.SDK_INT >= 29 && !uri.contains("albumart")) {
+            try { contentResolver.loadThumbnail(u, android.util.Size(300, 300), null) } catch (_: Throwable) { null }
+        } else {
+            try { contentResolver.openInputStream(u)?.use { BitmapFactory.decodeStream(it) } } catch (_: Throwable) { null }
+        } ?: return null
+        val out = java.io.ByteArrayOutputStream()
+        bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, out)
+        return out.toByteArray()
+    }
+
+    private fun labelOf(pkg: String) = try {
+        packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0)).toString()
+    } catch (_: Throwable) { pkg }
+
+    /** The music app you use: the one that played last, else the phone's default for "play X". */
+    private fun musicApp(): String? {
+        VibeNotifService.instance?.lastMusicApp()?.let { return it }
+        val i = Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH)
+        val p = packageManager.resolveActivity(i, PackageManager.MATCH_DEFAULT_ONLY)?.activityInfo?.packageName
+        return if (p == null || p == "android" || p == packageName) null else p
+    }
+
+    /**
+     * Asks a music app to play by search in the background, the way car screens do:
+     * through its running session, or by connecting to its media browser service.
+     */
+    private fun playSilently(q: String, pkgArg: String?, result: MethodChannel.Result) {
+        val pkg = pkgArg ?: musicApp()
+        if (pkg == null || q.isBlank()) { result.success(null); return }
+        var done = false
+        val main = Handler(Looper.getMainLooper())
+        fun finish(v: String?) {
+            if (done) return
+            done = true
+            try { result.success(v?.let { mapOf("package" to it, "label" to labelOf(it)) }) } catch (_: Throwable) {}
+        }
+        val live = VibeNotifService.instance?.controllerFor(pkg)
+        if (live != null) {
+            try { live.transportControls.playFromSearch(q, Bundle()); finish(pkg); return } catch (_: Throwable) {}
+        }
+        val svc = try {
+            packageManager.queryIntentServices(Intent("android.media.browse.MediaBrowserService").setPackage(pkg), 0).firstOrNull()
+        } catch (_: Throwable) { null }
+        if (svc == null) { finish(null); return }
+        var browser: android.media.browse.MediaBrowser? = null
+        browser = android.media.browse.MediaBrowser(this, ComponentName(pkg, svc.serviceInfo.name),
+            object : android.media.browse.MediaBrowser.ConnectionCallback() {
+                override fun onConnected() {
+                    try {
+                        val c = android.media.session.MediaController(this@MainActivity, browser!!.sessionToken)
+                        c.transportControls.playFromSearch(q, Bundle())
+                        finish(pkg)
+                    } catch (_: Throwable) { finish(null) }
+                    main.postDelayed({ try { browser?.disconnect() } catch (_: Throwable) {} }, 20000)
+                }
+                override fun onConnectionFailed() { finish(null) }
+                override fun onConnectionSuspended() {}
+            }, null)
+        try { browser.connect() } catch (_: Throwable) { finish(null); return }
+        main.postDelayed({ finish(null) }, 7000)
+    }
+
     private fun saveDownload(path: String, name: String, mime: String): String? {
         val f = java.io.File(path)
         if (!f.exists()) return null
@@ -792,8 +1019,12 @@ class MainActivity : FlutterActivity() {
         "phone" to has(Manifest.permission.CALL_PHONE),
         "sms" to has(Manifest.permission.SEND_SMS),
         "calendar" to has(Manifest.permission.READ_CALENDAR),
-        "readSms" to has(Manifest.permission.READ_SMS)
+        "readSms" to has(Manifest.permission.READ_SMS),
+        "audio" to has(audioPerm)
     )
+
+    private val audioPerm =
+        if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_AUDIO else Manifest.permission.READ_EXTERNAL_STORAGE
 
     private fun loadContacts(): List<Map<String, Any>> {
         if (!has(Manifest.permission.READ_CONTACTS)) return emptyList()
@@ -1194,6 +1425,7 @@ class VibeNotifService : NotificationListenerService() {
         }
         if (t != lastT) { mediaKeys[pkg] = key; mediaChangedAt[pkg] = now }
         mediaLast[pkg] = t to st
+        if (st == 1) lastPlayed = pkg
         if (event == null) return
         val label = try {
             packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0)).toString()
@@ -1206,6 +1438,15 @@ class VibeNotifService : NotificationListenerService() {
     }
 
     /** play / pause / toggle / next / previous on a music app (or whichever is playing). */
+    fun controllerFor(pkg: String): MediaController? = controllers.values.map { it.first }.firstOrNull { it.packageName == pkg }
+
+    /** The app that played music most recently (or is playing now). */
+    fun lastMusicApp(): String? {
+        controllers.values.map { it.first }.firstOrNull { state(it) == 1 }?.let { return it.packageName }
+        return lastPlayed
+    }
+    var lastPlayed: String? = null
+
     fun control(pkg: String?, action: String): Boolean {
         val list = controllers.values.map { it.first }
         val c = list.firstOrNull { it.packageName == pkg }
@@ -1510,5 +1751,41 @@ class CrashSaver(private val dir: java.io.File, private val prev: Thread.Uncaugh
             java.io.File(dir, "last_crash.txt").writeText("$e$cause\n$trace")
         } catch (_: Throwable) {}
         prev?.uncaughtException(t, e)
+    }
+}
+
+/** Plays music for Vibe in the background, with lock-screen and notification controls (Media3). */
+class VibePlayerService : androidx.media3.session.MediaSessionService() {
+    private var session: androidx.media3.session.MediaSession? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        val player = androidx.media3.exoplayer.ExoPlayer.Builder(this)
+            .setAudioAttributes(
+                androidx.media3.common.AudioAttributes.Builder()
+                    .setUsage(androidx.media3.common.C.USAGE_MEDIA)
+                    .setContentType(androidx.media3.common.C.AUDIO_CONTENT_TYPE_MUSIC)
+                    .build(),
+                true
+            )
+            .setHandleAudioBecomingNoisy(true)
+            .build()
+        session = androidx.media3.session.MediaSession.Builder(this, player).build()
+    }
+
+    override fun onGetSession(controllerInfo: androidx.media3.session.MediaSession.ControllerInfo) = session
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        val p = session?.player
+        if (p == null || !p.playWhenReady || p.mediaItemCount == 0) stopSelf()
+    }
+
+    override fun onDestroy() {
+        session?.run {
+            player.release()
+            release()
+        }
+        session = null
+        super.onDestroy()
     }
 }
