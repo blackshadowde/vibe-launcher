@@ -193,7 +193,8 @@ class Brain {
 
   static String norm(String s) => s
       .toLowerCase()
-      .replaceAll(RegExp(r"[^a-z0-9ऀ-ॿ ]"), ' ')
+      // Keep letters of every script (Telugu, Hindi, Tamil…), not just English
+      .replaceAll(RegExp(r"[^\p{L}\p{M}\p{N} ]", unicode: true), ' ')
       .replaceAll(RegExp(r'\s+'), ' ')
       .trim();
 

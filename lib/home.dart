@@ -218,6 +218,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     }
     final pc = People.parse(text);
     if (pc != null && await _people(pc)) return;
+    if (pc != null && pc.action != 'calls' && !Gemini.enabled && _nano != 'available') {
+      await Future.delayed(const Duration(milliseconds: 250));
+      _say('I couldn\'t find "${pc.name}" in your contacts. Try their name as it\'s saved, or type the number, like "call 98765 43210".');
+      return;
+    }
     if (isMissCmd(text) && await _whatDidIMiss()) return;
     final r = Brain.handle(text, _apps);
     if (!r.sure && (Gemini.enabled || _nano == 'available')) {
@@ -587,6 +592,14 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
 
   /// Handles call / message / call history. False = no such contact, let Vibe try something else.
   Future<bool> _people(PeopleCmd pc, {String preface = ''}) async {
+    // A phone number instead of a name: "call 98765 43210", "message +91 98765 43210 hi".
+    // Works even without contacts permission.
+    final number = pc.action == 'calls' ? null : _numberIn(pc.name);
+    if (number != null) {
+      if (People.all.isEmpty && People.ready) await People.load();
+      await _doPeople(pc, _personForNumber(number), preface);
+      return true;
+    }
     if (!await People.ensure()) {
       _say('I need permission to see your contacts for that. Allow it when Android asks, or in Vibe settings → People.',
           error: true);
@@ -609,6 +622,27 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     }
     await _doPeople(pc, best.p, preface);
     return true;
+  }
+
+  /// The phone number in [s] if that's all it is (digits, spaces, dashes, brackets, a leading +).
+  String? _numberIn(String s) {
+    final t = s.trim();
+    if (!RegExp(r'^\+?[\d\s\-().]{3,}$').hasMatch(t)) return null;
+    final digits = t.replaceAll(RegExp(r'[^\d]'), '');
+    if (digits.length < 3) return null;
+    return t.startsWith('+') ? '+$digits' : digits;
+  }
+
+  /// A saved contact with this number, or an unsaved "person" that is just the number.
+  Person _personForNumber(String number) {
+    final d = number.replaceAll(RegExp(r'\D'), '');
+    if (d.length >= 7) {
+      for (final p in People.all) {
+        final pd = p.number.replaceAll(RegExp(r'\D'), '');
+        if (pd.length >= 7 && pd.substring(pd.length - 7) == d.substring(d.length - 7)) return p;
+      }
+    }
+    return Person('', number, number, true, false, false, false);
   }
 
   Future<void> _doPeople(PeopleCmd pc, Person p, String preface) async {

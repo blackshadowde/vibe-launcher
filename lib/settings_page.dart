@@ -817,7 +817,7 @@ class SettingsPage extends StatelessWidget {
             ListTile(
               leading: Icon(Icons.info_outline_rounded, color: c.muted),
               title: Text('Vibe Launcher', style: TextStyle(color: c.text)),
-              subtitle: Text('Version 0.18.4', style: TextStyle(color: c.faint)),
+              subtitle: Text('Version 0.18.5', style: TextStyle(color: c.faint)),
             ),
           ]),
           ],

@@ -149,6 +149,12 @@ class People {
       via = on.group(1)!.toLowerCase() == 'whatsapp' ? 'whatsapp' : 'sms';
       rest = (rest.substring(0, on.start) + rest.substring(on.end)).trim();
     }
+    // A phone number first: "message +91 98765 43210 I'm late"
+    final numM = RegExp(r'^(\+?\d[\d\s\-()]{4,}\d)(?:\s+(.*))?$').firstMatch(rest);
+    if (numM != null) {
+      final text = (numM.group(2) ?? '').replaceFirst(RegExp(r'^(that|saying|to say|:|-)\s*', caseSensitive: false), '').trim();
+      return PeopleCmd('message', name: numM.group(1)!.trim(), text: text, via: via);
+    }
     // Longest run of first words that is a contact = the name; the rest is the message
     final words = rest.split(RegExp(r'\s+'));
     for (var k = words.length > 4 ? 4 : words.length; k >= 1; k--) {
