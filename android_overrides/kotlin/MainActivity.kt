@@ -158,6 +158,14 @@ class MainActivity : FlutterActivity() {
                     val uri = try { saveToGallery(call.argument<String>("path") ?: "") } catch (e: Exception) { null }
                     runOnUiThread { try { result.success(uri) } catch (_: Throwable) {} }
                 }.start()
+                // Telegram downloads → Download/Vibe Telegram (visible in Files, music & video players)
+                "saveDownload" -> Thread {
+                    val uri = try {
+                        saveDownload(call.argument<String>("path") ?: "", call.argument<String>("name") ?: "file",
+                            call.argument<String>("mime") ?: "application/octet-stream")
+                    } catch (e: Throwable) { null }
+                    runOnUiThread { try { result.success(uri) } catch (_: Throwable) {} }
+                }.start()
                 "shareImage" -> {
                     val i = Intent(Intent.ACTION_SEND).setType("image/jpeg")
                         .putExtra(Intent.EXTRA_STREAM, Uri.parse(call.argument<String>("uri") ?: ""))
@@ -740,6 +748,33 @@ class MainActivity : FlutterActivity() {
             }, null, null)
         }
         return uri.toString()
+    }
+
+    private fun saveDownload(path: String, name: String, mime: String): String? {
+        val f = java.io.File(path)
+        if (!f.exists()) return null
+        val clean = name.replace(Regex("[\\\\/:*?\"<>|]"), "_").take(120).ifBlank { "file" }
+        if (Build.VERSION.SDK_INT >= 29) {
+            val v = android.content.ContentValues().apply {
+                put(android.provider.MediaStore.Downloads.DISPLAY_NAME, clean)
+                put(android.provider.MediaStore.Downloads.MIME_TYPE, mime)
+                put(android.provider.MediaStore.Downloads.RELATIVE_PATH, "Download/Vibe Telegram")
+                put(android.provider.MediaStore.Downloads.IS_PENDING, 1)
+            }
+            val col = android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI
+            val uri = contentResolver.insert(col, v) ?: return null
+            contentResolver.openOutputStream(uri)?.use { out -> f.inputStream().use { it.copyTo(out, 1 shl 16) } }
+            contentResolver.update(uri, android.content.ContentValues().apply {
+                put(android.provider.MediaStore.Downloads.IS_PENDING, 0)
+            }, null, null)
+            return uri.toString()
+        }
+        @Suppress("DEPRECATION")
+        val dir = java.io.File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "Vibe Telegram")
+        dir.mkdirs()
+        val out = java.io.File(dir, clean)
+        f.copyTo(out, overwrite = true)
+        return Uri.fromFile(out).toString()
     }
 
     private fun has(p: String) = checkSelfPermission(p) == PackageManager.PERMISSION_GRANTED
