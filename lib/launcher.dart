@@ -40,6 +40,9 @@ class Native {
   static Future<void> uninstall(String pkg) => _c.invokeMethod('uninstall', {'package': pkg});
   static Future<bool> isDefault() async => await _c.invokeMethod<bool>('isDefaultLauncher') ?? false;
   static Future<Map> deviceInfo() async => await _c.invokeMapMethod('deviceInfo') ?? {};
+
+  /// Opens Android's voice typing and returns what was said (null if cancelled).
+  static Future<String?> listen() => _c.invokeMethod<String>('listen');
 }
 
 /// "Servers" in the left rail. Built from Android's own app categories.
@@ -62,6 +65,7 @@ enum SortMode { recent, az }
 /// Launcher settings, saved on the phone.
 class Prefs extends ChangeNotifier {
   late SharedPreferences _p;
+  SharedPreferences get sp => _p;
   ThemeMode theme = ThemeMode.dark;
   SortMode sort = SortMode.recent;
   bool haptics = true;
