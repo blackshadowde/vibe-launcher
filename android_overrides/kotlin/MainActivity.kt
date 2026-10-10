@@ -258,6 +258,13 @@ class MainActivity : FlutterActivity() {
                         else open(Intent(Intent.ACTION_DIAL, uri))
                     )
                 }
+                // Opens the phone's own dialer with a number filled in (needed for codes like *#06#)
+                "dialPad" -> result.success(open(Intent(Intent.ACTION_DIAL, Uri.parse("tel:" + Uri.encode(call.argument<String>("number") ?: "")))))
+                // "Save as contact" screen with the number filled in
+                "addContact" -> result.success(open(Intent(Intent.ACTION_INSERT).apply {
+                    type = android.provider.ContactsContract.Contacts.CONTENT_TYPE
+                    putExtra(android.provider.ContactsContract.Intents.Insert.PHONE, call.argument<String>("number") ?: "")
+                }))
                 "sendSms" -> {
                     val num = call.argument<String>("number") ?: ""
                     val text = call.argument<String>("text") ?: ""
