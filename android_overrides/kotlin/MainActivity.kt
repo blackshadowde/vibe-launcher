@@ -62,6 +62,7 @@ class MainActivity : FlutterActivity() {
         channel = MethodChannel(engine.dartExecutor.binaryMessenger, channelName)
         VibeNotifService.listener = { n -> channel?.invokeMethod("notif", n) }
         Sched.listener = { f -> channel?.invokeMethod("fired", f) }
+        watchNetwork()
         pendingShare = readShare(intent)
         channel!!.setMethodCallHandler { call, result ->
             val pkg = call.argument<String>("package")
@@ -233,6 +234,7 @@ class MainActivity : FlutterActivity() {
                 ))
                 "openEvent" -> result.success(open(Intent(Intent.ACTION_VIEW,
                     ContentUris.withAppendedId(CalendarContract.Events.CONTENT_URI, (call.argument<Number>("id") ?: 0).toLong()))))
+                "online" -> result.success(isOnline())
                 "takeShared" -> { result.success(pendingShare); pendingShare = null }
                 "filesDir" -> result.success(filesDir.absolutePath)
                 "listen" -> {
@@ -252,6 +254,8 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
+        netCallback?.let { try { getSystemService(android.net.ConnectivityManager::class.java)?.unregisterNetworkCallback(it) } catch (_: Exception) {} }
+        netCallback = null
         VibeNotifService.listener = null
         Sched.listener = null
         super.onDestroy()
@@ -394,6 +398,31 @@ class MainActivity : FlutterActivity() {
             .putExtra(CalendarContract.EXTRA_EVENT_ALL_DAY, allDay)
         if (location.isNotEmpty()) i.putExtra(CalendarContract.Events.EVENT_LOCATION, location)
         return if (open(i)) "opened" else "failed"
+    }
+
+    private var netCallback: android.net.ConnectivityManager.NetworkCallback? = null
+
+    private fun isOnline(): Boolean {
+        val cm = getSystemService(android.net.ConnectivityManager::class.java) ?: return true
+        val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false
+        return caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+            caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+    }
+
+    /** Tells Vibe when internet comes and goes, so queued questions get answered on reconnect. */
+    private fun watchNetwork() {
+        if (netCallback != null) return
+        val cm = getSystemService(android.net.ConnectivityManager::class.java) ?: return
+        val main = Handler(Looper.getMainLooper())
+        val cb = object : android.net.ConnectivityManager.NetworkCallback() {
+            override fun onCapabilitiesChanged(n: android.net.Network, c: android.net.NetworkCapabilities) {
+                main.post { channel?.invokeMethod("net", isOnline()) }
+            }
+            override fun onLost(n: android.net.Network) {
+                main.postDelayed({ channel?.invokeMethod("net", isOnline()) }, 500)
+            }
+        }
+        try { cm.registerDefaultNetworkCallback(cb); netCallback = cb } catch (_: Exception) {}
     }
 
     private fun has(p: String) = checkSelfPermission(p) == PackageManager.PERMISSION_GRANTED
