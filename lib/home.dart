@@ -424,6 +424,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
             child: InkWell(
               borderRadius: BorderRadius.circular(8),
               onTap: () { prefs.tap(); showProfileSheet(context); },
+              // Hidden shortcut: long-press yourself for Vibe settings
+              onLongPress: () { prefs.heavy(); _openLauncherSettings(); },
               child: Padding(
                 padding: const EdgeInsets.all(4),
                 child: Row(children: [
@@ -440,23 +442,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
                   ),
                 ]),
               ),
-            ),
-          ),
-          IconButton(
-            tooltip: 'All apps',
-            icon: Icon(Icons.apps_rounded, color: c.muted),
-            onPressed: () { prefs.tap(); _openDrawer(); },
-          ),
-          // Tap = phone settings, long-press = launcher settings
-          GestureDetector(
-            onTap: () { prefs.tap(); Native.openSettings(); },
-            onLongPress: () {
-              prefs.heavy();
-              Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SettingsPage()));
-            },
-            child: Padding(
-              padding: const EdgeInsets.all(10),
-              child: Icon(Icons.settings_rounded, color: c.muted, size: 24),
             ),
           ),
         ]),
