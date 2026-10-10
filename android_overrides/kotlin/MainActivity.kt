@@ -89,18 +89,34 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(engine: FlutterEngine) {
         super.configureFlutterEngine(engine)
+        // If Vibe ever crashes, keep the reason so it can show it in chat on the next start
+        val prev = Thread.getDefaultUncaughtExceptionHandler()
+        if (prev !is CrashSaver) Thread.setDefaultUncaughtExceptionHandler(CrashSaver(filesDir, prev))
         channel = MethodChannel(engine.dartExecutor.binaryMessenger, channelName)
         VibeNotifService.listener = { n -> channel?.invokeMethod("notif", n) }
         Sched.listener = { f -> channel?.invokeMethod("fired", f) }
         watchNetwork()
         pendingShare = readShare(intent)
         channel!!.setMethodCallHandler { call, result ->
+            try { handleCall(call, result) } catch (t: Throwable) {
+                try { result.error("native", t.toString(), null) } catch (_: Throwable) {}
+            }
+        }
+    }
+
+    private fun handleCall(call: io.flutter.plugin.common.MethodCall, result: MethodChannel.Result) {
             val pkg = call.argument<String>("package")
             when (call.method) {
+                "lastCrash" -> {
+                    val f = java.io.File(filesDir, "last_crash.txt")
+                    val t = try { if (f.exists()) f.readText() else null } catch (_: Throwable) { null }
+                    try { f.delete() } catch (_: Throwable) {}
+                    result.success(t)
+                }
                 "getApps" -> Thread {
                     val pack = call.argument<String>("iconPack") ?: ""
-                    val list = try { loadApps(pack) } catch (e: Exception) { emptyList<Map<String, Any>>() }
-                    runOnUiThread { result.success(list) }
+                    val list = try { loadApps(pack) } catch (e: Throwable) { emptyList<Map<String, Any>>() }
+                    runOnUiThread { try { result.success(list) } catch (_: Throwable) {} }
                 }.start()
                 "launch" -> {
                     val i = pkg?.let { packageManager.getLaunchIntentForPackage(it) }
@@ -132,7 +148,7 @@ class MainActivity : FlutterActivity() {
                 // ---------- Pictures: save, share, set as wallpaper ----------
                 "saveToGallery" -> Thread {
                     val uri = try { saveToGallery(call.argument<String>("path") ?: "") } catch (e: Exception) { null }
-                    runOnUiThread { result.success(uri) }
+                    runOnUiThread { try { result.success(uri) } catch (_: Throwable) {} }
                 }.start()
                 "shareImage" -> {
                     val i = Intent(Intent.ACTION_SEND).setType("image/jpeg")
@@ -147,7 +163,7 @@ class MainActivity : FlutterActivity() {
                             else android.app.WallpaperManager.FLAG_SYSTEM or android.app.WallpaperManager.FLAG_LOCK
                         android.app.WallpaperManager.getInstance(this).setBitmap(bmp, null, true, which); true
                     } catch (e: Exception) { false }
-                    runOnUiThread { result.success(ok) }
+                    runOnUiThread { try { result.success(ok) } catch (_: Throwable) {} }
                 }.start()
                 "openSettingsPage" -> result.success(
                     open(Intent(call.argument<String>("action") ?: Settings.ACTION_SETTINGS)) ||
@@ -207,16 +223,16 @@ class MainActivity : FlutterActivity() {
                     }
                 }
                 "contacts" -> Thread {
-                    val l = try { loadContacts() } catch (e: Exception) { emptyList<Map<String, Any>>() }
-                    runOnUiThread { result.success(l) }
+                    val l = try { loadContacts() } catch (e: Throwable) { emptyList<Map<String, Any>>() }
+                    runOnUiThread { try { result.success(l) } catch (_: Throwable) {} }
                 }.start()
                 "contactPhoto" -> Thread {
                     val bytes = try { contactPhoto(call.argument<String>("id") ?: "") } catch (e: Exception) { null }
-                    runOnUiThread { result.success(bytes) }
+                    runOnUiThread { try { result.success(bytes) } catch (_: Throwable) {} }
                 }.start()
                 "callLog" -> Thread {
-                    val l = try { callLog(call.argument<Int>("limit") ?: 10) } catch (e: Exception) { emptyList<Map<String, Any>>() }
-                    runOnUiThread { result.success(l) }
+                    val l = try { callLog(call.argument<Int>("limit") ?: 10) } catch (e: Throwable) { emptyList<Map<String, Any>>() }
+                    runOnUiThread { try { result.success(l) } catch (_: Throwable) {} }
                 }.start()
                 "call" -> {
                     val num = call.argument<String>("number") ?: ""
@@ -279,8 +295,8 @@ class MainActivity : FlutterActivity() {
                 "events" -> Thread {
                     val l = try {
                         events(call.argument<Number>("from")!!.toLong(), call.argument<Number>("to")!!.toLong())
-                    } catch (e: Exception) { emptyList<Map<String, Any>>() }
-                    runOnUiThread { result.success(l) }
+                    } catch (e: Throwable) { emptyList<Map<String, Any>>() }
+                    runOnUiThread { try { result.success(l) } catch (_: Throwable) {} }
                 }.start()
                 "addEvent" -> result.success(addEvent(
                     call.argument<String>("title") ?: "Event",
@@ -308,16 +324,16 @@ class MainActivity : FlutterActivity() {
                 }
                 // ---------- Global search ----------
                 "searchSms" -> Thread {
-                    val l = try { searchSms(call.argument<String>("q") ?: "") } catch (e: Exception) { emptyList<Map<String, Any>>() }
-                    runOnUiThread { result.success(l) }
+                    val l = try { searchSms(call.argument<String>("q") ?: "") } catch (e: Throwable) { emptyList<Map<String, Any>>() }
+                    runOnUiThread { try { result.success(l) } catch (_: Throwable) {} }
                 }.start()
                 "searchFiles" -> Thread {
-                    val l = try { searchFiles(call.argument<String>("q") ?: "") } catch (e: Exception) { emptyList<Map<String, Any>>() }
-                    runOnUiThread { result.success(l) }
+                    val l = try { searchFiles(call.argument<String>("q") ?: "") } catch (e: Throwable) { emptyList<Map<String, Any>>() }
+                    runOnUiThread { try { result.success(l) } catch (_: Throwable) {} }
                 }.start()
                 "searchEvents" -> Thread {
-                    val l = try { searchEvents(call.argument<String>("q") ?: "") } catch (e: Exception) { emptyList<Map<String, Any>>() }
-                    runOnUiThread { result.success(l) }
+                    val l = try { searchEvents(call.argument<String>("q") ?: "") } catch (e: Throwable) { emptyList<Map<String, Any>>() }
+                    runOnUiThread { try { result.success(l) } catch (_: Throwable) {} }
                 }.start()
                 "openFile" -> {
                     val i = Intent(Intent.ACTION_VIEW)
@@ -408,7 +424,6 @@ class MainActivity : FlutterActivity() {
                 }
                 else -> result.notImplemented()
             }
-        }
     }
 
     override fun onDestroy() {
@@ -1059,7 +1074,7 @@ class VibeNotifService : NotificationListenerService() {
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
-        try { handle(sbn) } catch (_: Exception) {}
+        try { handle(sbn) } catch (_: Throwable) {}
     }
 
     private fun handle(sbn: StatusBarNotification) {
@@ -1327,4 +1342,17 @@ fun waNumberFor(ctx: Context, raw: String): String {
     val local = digits.trimStart('0')
     // 10 digits or fewer = local number: add the SIM's country code
     return if (cc.isNotEmpty() && local.length <= 10) cc + local else local
+}
+
+/** Saves the reason for a crash to a small file, then lets Android handle it as usual. */
+class CrashSaver(private val dir: java.io.File, private val prev: Thread.UncaughtExceptionHandler?) :
+    Thread.UncaughtExceptionHandler {
+    override fun uncaughtException(t: Thread, e: Throwable) {
+        try {
+            val trace = e.stackTrace.take(10).joinToString("\n") { "  at $it" }
+            val cause = e.cause?.let { "\nCaused by: $it" } ?: ""
+            java.io.File(dir, "last_crash.txt").writeText("$e$cause\n$trace")
+        } catch (_: Throwable) {}
+        prev?.uncaughtException(t, e)
+    }
 }
