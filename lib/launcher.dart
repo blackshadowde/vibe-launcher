@@ -8,7 +8,7 @@ import 'theme.dart';
 
 /// One installed app. In the UI it's a "user" in the DM list.
 /// Shown in settings and when you ask "what version is this".
-const vibeVersion = '0.23.0';
+const vibeVersion = '0.24.1';
 
 class AppEntry {
   final String label, pkg;
@@ -26,6 +26,7 @@ class Native {
   static void Function(Map)? onFired;
   static void Function(bool)? onNet;
   static void Function(int done, int total)? onNanoProgress;
+  static void Function(Map)? onPlayer;
 
   static void init() {
     _c.setMethodCallHandler((call) async {
@@ -34,6 +35,7 @@ class Native {
       if (call.method == 'shared' && call.arguments is Map) onShared?.call(call.arguments as Map);
       if (call.method == 'fired' && call.arguments is Map) onFired?.call(call.arguments as Map);
       if (call.method == 'net') onNet?.call(call.arguments == true);
+      if (call.method == 'player' && call.arguments is Map) onPlayer?.call(call.arguments as Map);
       if (call.method == 'nanoProgress' && call.arguments is Map) {
         final m = call.arguments as Map;
         onNanoProgress?.call((m['done'] as num?)?.toInt() ?? 0, (m['total'] as num?)?.toInt() ?? 0);
@@ -94,6 +96,7 @@ class Native {
 
   // On-phone AI (Gemini Nano)
   static Future<String> nanoStatus() async => await _c.invokeMethod<String>('nanoStatus') ?? 'unavailable';
+  static Future<Map> nanoInfo() async => Map.from(await _c.invokeMethod<Map>('nanoInfo') ?? const {});
   static Future<bool> nanoDownload() async => await _c.invokeMethod<bool>('nanoDownload') ?? false;
   static Future<String?> nanoAsk(String prompt, {String? image}) =>
       _c.invokeMethod<String>('nanoAsk', {'prompt': prompt, 'image': image});
@@ -168,6 +171,24 @@ class Native {
       await _c.invokeMethod<bool>('openUrl', {'url': url, 'package': pkg}) ?? false;
   static Future<bool> openSettingsPage(String action) async =>
       await _c.invokeMethod<bool>('openSettingsPage', {'action': action}) ?? false;
+  // Vibe's own player
+  static Future<Map> requestAudio() async =>
+      Map.from(await _c.invokeMethod<Map>('requestAudio') ?? const {});
+  static Future<List<Map>> searchSongs(String q, {String by = 'any'}) async =>
+      await _c.invokeListMethod<Map>('searchSongs', {'q': q, 'by': by}) ?? [];
+  static Future<Uint8List?> songArt(String uri) => _c.invokeMethod<Uint8List>('songArt', {'uri': uri});
+  static Future<void> playSongs(List<Map> songs, int index) =>
+      _c.invokeMethod('playSongs', {'songs': songs, 'index': index});
+  static Future<void> playerCmd(String action, {int ms = 0}) => _c.invokeMethod('playerCmd', {'action': action, 'ms': ms});
+  /// Plays by search inside a music app, without opening it. Returns {package, label} or null.
+  static Future<Map?> playSilently(String q, {String? pkg}) async {
+    try {
+      return await _c.invokeMethod<Map>('playSilently', {'query': q, 'package': pkg});
+    } catch (_) {
+      return null;
+    }
+  }
+  static Future<Map?> musicApp() => _c.invokeMethod<Map>('musicApp');
   static Future<bool> playMusic(String q, {String? pkg}) async =>
       await _c.invokeMethod<bool>('playMusic', {'query': q, 'package': pkg}) ?? false;
   static Future<bool> setAlarm(int h, int m, String label) async =>

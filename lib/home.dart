@@ -9,6 +9,7 @@ import 'launcher.dart';
 import 'main.dart';
 import 'memory.dart';
 import 'people.dart';
+import 'player.dart';
 import 'imagegen.dart';
 import 'search.dart';
 import 'privacy.dart';
@@ -66,6 +67,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     Native.onShared = _onShared;
     Native.onFired = _onFired;
     appErrors.addListener(_onAppError);
+    Native.onPlayer = VibePlayer.i.onEvent;
     Telegram.i.onIncoming = _onTelegram;
     Telegram.i.onDownloaded = (d) {
       if (!mounted) return;
@@ -228,6 +230,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
       _say(mem);
       return;
     }
+    if (await _musicCommands(text)) return;
     if (await _dialerCommands(text)) return;
     if (await _telegramCommands(text)) return;
     if (await _selfCommands(text)) return;
@@ -320,7 +323,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
       case Act.launcherSettings:
         _openLauncherSettings();
       case Act.media:
-        if (!await Native.mediaControl(null, r.media)) {
+        if (VibePlayer.i.active) {
+          await VibePlayer.i.cmd(r.media);
+        } else if (!await Native.mediaControl(null, r.media)) {
           _say('Nothing is playing right now, or notification access is off.');
         }
       default:
@@ -485,13 +490,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
         await _pause();
         Native.openUrl(url);
       case 'play_music':
-        final q = str('query');
-        _say(say('Playing $q…'));
-        await _pause();
-        if (!await Native.playMusic(q)) {
-          _say('Your music app can\'t play by search, so I opened it on YouTube Music instead.');
-          Native.openUrl('https://music.youtube.com/search?q=${Uri.encodeComponent(q)}');
-        }
+        if (preface.isNotEmpty) _say(preface);
+        await _playSong(str('query'));
       case 'set_alarm':
         final h = toInt('hour', 7).clamp(0, 23), m = toInt('minute', 0).clamp(0, 59);
         final ok = await Native.setAlarm(h, m, str('label'));
@@ -539,7 +539,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
       case 'media_control':
         final action = str('action');
         if (preface.isNotEmpty) _say(preface);
-        if (!await Native.mediaControl(null, action.isEmpty ? 'toggle' : action)) {
+        if (VibePlayer.i.active) {
+          await VibePlayer.i.cmd(action.isEmpty ? 'toggle' : action);
+        } else if (!await Native.mediaControl(null, action.isEmpty ? 'toggle' : action)) {
           _say('Nothing is playing right now, or notification access is off.');
         }
       case 'call_person':
@@ -971,6 +973,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
             actionPill('${b['label']}', done ? null : () => _onAsk(m, '${b['do']}'), primary: b['primary'] == true),
           ]),
         ]);
+      case 'player':
+        return PlayerCard(card: card);
       case 'tgfile':
         return TgFileTile(file: TgFile.fromCard(card), from: '${card['from'] ?? ''}');
       case 'models':
@@ -2051,6 +2055,106 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     }
   }
 
+  // ---------- Music: Vibe's own player first, then streaming apps silently ----------
+  /// "play blinding lights", "play songs by the weeknd", "play my downloads", "play X on spotify"
+  Future<bool> _musicCommands(String text) async {
+    final t = text.trim();
+    final low = Brain.norm(t);
+    final m = RegExp(r'^(?:please )?(?:play|put on|listen to|start playing)\s+(.+)$').firstMatch(low);
+    if (m == null) return false;
+    var q = m.group(1)!.trim();
+    // "play", "play next", "play music" etc. are controls: leave them to the usual handling
+    if (RegExp(r'^(it|this|that|the music|music|the song|song|next|previous|prev|again|on)$').hasMatch(q)) return false;
+    // "… on spotify" / "… in yt music": that app
+    String? pkg;
+    final on = RegExp(r'^(.+?)\s+(?:on|in|using|with|from)\s+(.+)$').firstMatch(q);
+    if (on != null) {
+      final app = Brain.match(Brain.norm(on.group(2)!), _apps);
+      if (app.isNotEmpty && app.first.score >= 70) {
+        pkg = app.first.app.pkg;
+        q = on.group(1)!.trim();
+      }
+    }
+    // A game / video / app called this? "play subway surfers" should open the app, not music
+    if (pkg == null) {
+      final app = Brain.match(Brain.norm(q), _apps);
+      if (app.isNotEmpty && app.first.score >= 90) return false;
+    }
+    await _playSong(q, pkg: pkg);
+    return true;
+  }
+
+  Future<void> _playSong(String query, {String? pkg}) async {
+    var q = query.trim().replaceAll(RegExp(r'\s+(song|track|music)$'), '');
+    if (q.isEmpty) return;
+    // 1) Songs on this phone → Vibe plays them itself (unless you named a streaming app)
+    if (pkg == null) {
+      final perms = await Native.requestAudio();
+      if (perms['audio'] == true) {
+        List<Map> songs;
+        String title;
+        final by = RegExp(r'^(?:songs?|music|something) (?:by|from) (.+)$').firstMatch(q);
+        if (RegExp(r'^(my )?(downloads|downloaded songs|downloaded music|telegram (songs|music|downloads))$').hasMatch(q)) {
+          songs = await Native.searchSongs('', by: 'downloads');
+          title = 'your downloads';
+        } else if (RegExp(r'^(my )?(music|songs|library|playlist|some music|anything|all songs)$').hasMatch(q)) {
+          songs = (await Native.searchSongs('', by: 'all'))..shuffle();
+          title = 'your music';
+        } else if (by != null) {
+          songs = (await Native.searchSongs(by.group(1)!, by: 'artist'))..shuffle();
+          title = 'songs by ${by.group(1)}';
+        } else {
+          songs = await Native.searchSongs(q);
+          // Best match first: exact title, then title starting with it, then the rest
+          final n = Brain.norm(q);
+          int rank(Map s) {
+            final ti = Brain.norm('${s['title']}');
+            if (ti == n) return 0;
+            if (ti.startsWith(n)) return 1;
+            if (ti.contains(n)) return 2;
+            return 3;
+          }
+          songs.sort((a, b) => rank(a).compareTo(rank(b)));
+          title = songs.isEmpty ? q : '${songs.first['title']}';
+        }
+        if (songs.isNotEmpty) {
+          final list = songs.take(100).toList();
+          await VibePlayer.i.play(list);
+          _say('▶ Playing $title', card: {'type': 'player', 'songs': list, 'index': 0});
+          return;
+        }
+      }
+    }
+    // 2) Not on the phone: ask your music app to play it in the background
+    if (VibePlayer.i.active) VibePlayer.i.cmd('stop'); // one player at a time
+    setState(() => _thinking = true);
+    final sent = DateTime.now().millisecondsSinceEpoch;
+    final r = await Native.playSilently(q, pkg: pkg);
+    if (mounted) setState(() => _thinking = false);
+    if (r != null) {
+      final app = '${r['label']}';
+      final target = '${r['package']}';
+      _appSays(target, app, 'Playing "$q"…');
+      // If the app didn't actually start playing, open it the usual way
+      Future.delayed(const Duration(seconds: 7), () async {
+        if (!mounted) return;
+        final started = chat.msgs.reversed.take(15).any((x) => x.media && x.pkg == target && x.ts >= sent - 1000);
+        if (!started) {
+          _say('$app didn\'t start in the background, so I\'m opening it.');
+          await Native.playMusic(q, pkg: target);
+        }
+      });
+      return;
+    }
+    // 3) Last resort: open a music app by search
+    _say('Playing $q…');
+    await _pause();
+    if (!await Native.playMusic(q, pkg: pkg)) {
+      _say('Your music app can\'t play by search, so I opened it on YouTube Music instead.');
+      Native.openUrl('https://music.youtube.com/search?q=${Uri.encodeComponent(q)}');
+    }
+  }
+
   // ---------- Dial pad ----------
   void _openDialer([String number = '']) {
     _focus.unfocus();
@@ -2608,8 +2712,25 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
           });
         }
       default:
-        _say('The offline AI isn\'t available on this phone right now. Update **Android AICore** and '
-            '**Private Compute Services** from the Play Store, restart the phone, then ask me again.');
+        final info = await Native.nanoInfo();
+        final err = '${info['error'] ?? ''}';
+        final aicore = '${info['aicore'] ?? '?'}';
+        _say('The offline AI isn\'t ready on this phone yet. Your ${info['model']} supports it; Google installs it through '
+            '**Android AICore**, which needs updating first.\n\n'
+            '• Status: ${info['status']}${err.isEmpty ? '' : ' ($err)'}\n'
+            '• Android AICore: $aicore\n'
+            '• Private Compute Services: ${info['pcs']}\n\n'
+            'These two don\'t show in Play Store search, so use the buttons. After updating, restart the phone and tap Check again. '
+            'Google sometimes turns it on a day or two later.',
+            card: {
+              'type': 'ask',
+              'state': 'ask',
+              'buttons': [
+                {'label': 'Update AICore', 'do': 'upd_aicore', 'primary': true},
+                {'label': 'Update Private Compute', 'do': 'upd_pcs'},
+                {'label': 'Check again', 'do': 'nano_check'},
+              ],
+            });
     }
   }
 
@@ -2645,13 +2766,19 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
 
   void _onAsk(Msg m, String action) {
     // Buttons you can use again and again (call, open…) stay active; one-time choices lock
-    const repeat = {'numcall', 'nummsg', 'numsave', 'numpad', 'tgfileopen', 'tgdownloads', 'tgopen', 'tgstart'};
+    const repeat = {'upd_aicore', 'upd_pcs', 'nano_check', 'numcall', 'nummsg', 'numsave', 'numpad', 'tgfileopen', 'tgdownloads', 'tgopen', 'tgstart'};
     if (!repeat.contains(action)) _setCard(m, Map.from(m.card!)..['state'] = action);
     switch (action) {
       case 'nano_models':
         _showModels();
       case 'cancel':
         _say('Okay. Ask me "download offline model" anytime.');
+      case 'upd_aicore':
+        Native.openUrl('market://details?id=com.google.android.aicore');
+      case 'upd_pcs':
+        Native.openUrl('market://details?id=com.google.android.as.oss');
+      case 'nano_check':
+        _offlineModel();
       case 'numcall' || 'nummsg' || 'numsave' || 'numpad':
         final n = '${m.card!['number']}';
         if (action == 'numcall') {
