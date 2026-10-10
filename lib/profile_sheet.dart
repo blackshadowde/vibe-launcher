@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'widgets.dart';
 import 'launcher.dart';
+import 'settings_page.dart';
 import 'theme.dart';
 
 /// Tap your name in the bottom bar: your profile + phone info + Manage account.
@@ -103,17 +104,34 @@ class _ProfileSheetState extends State<_ProfileSheet> {
           ),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: SizedBox(
-              width: double.infinity,
-              child: FilledButton.icon(
-                style: FilledButton.styleFrom(
-                    backgroundColor: VC.blurple, minimumSize: const Size(0, 44),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
-                icon: const Icon(Icons.manage_accounts_rounded),
-                label: const Text('Manage account'),
-                onPressed: () { prefs.tap(); Native.openAccounts(); },
+            child: Row(children: [
+              Expanded(
+                child: FilledButton.icon(
+                  style: FilledButton.styleFrom(
+                      backgroundColor: VC.blurple, minimumSize: const Size(0, 44),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+                  icon: const Icon(Icons.manage_accounts_rounded),
+                  label: const Text('Account'),
+                  onPressed: () { prefs.tap(); Native.openAccounts(); },
+                ),
               ),
-            ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: FilledButton.icon(
+                  style: FilledButton.styleFrom(
+                      backgroundColor: c.pane, foregroundColor: c.text, minimumSize: const Size(0, 44),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+                  icon: const Icon(Icons.tune_rounded),
+                  label: const Text('Vibe settings'),
+                  onPressed: () {
+                    prefs.tap();
+                    final nav = Navigator.of(context);
+                    nav.pop();
+                    nav.push(MaterialPageRoute(builder: (_) => const SettingsPage()));
+                  },
+                ),
+              ),
+            ]),
           ),
           const SizedBox(height: 16),
           _card(c, [
