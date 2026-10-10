@@ -7,6 +7,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'theme.dart';
 
 /// One installed app. In the UI it's a "user" in the DM list.
+/// Shown in settings and when you ask "what version is this".
+const vibeVersion = '0.20.0';
+
 class AppEntry {
   final String label, pkg;
   final Uint8List icon;
@@ -22,6 +25,7 @@ class Native {
   static void Function(Map)? onShared;
   static void Function(Map)? onFired;
   static void Function(bool)? onNet;
+  static void Function(int done, int total)? onNanoProgress;
 
   static void init() {
     _c.setMethodCallHandler((call) async {
@@ -30,6 +34,10 @@ class Native {
       if (call.method == 'shared' && call.arguments is Map) onShared?.call(call.arguments as Map);
       if (call.method == 'fired' && call.arguments is Map) onFired?.call(call.arguments as Map);
       if (call.method == 'net') onNet?.call(call.arguments == true);
+      if (call.method == 'nanoProgress' && call.arguments is Map) {
+        final m = call.arguments as Map;
+        onNanoProgress?.call((m['done'] as num?)?.toInt() ?? 0, (m['total'] as num?)?.toInt() ?? 0);
+      }
     });
   }
 

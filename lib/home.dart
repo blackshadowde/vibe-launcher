@@ -12,6 +12,7 @@ import 'people.dart';
 import 'imagegen.dart';
 import 'search.dart';
 import 'privacy.dart';
+import 'backup.dart';
 import 'day.dart';
 import 'sched.dart';
 import 'profile_sheet.dart';
@@ -192,6 +193,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
       await _sendReply(_replyTo!, text);
       return;
     }
+    if (await _keyInChat(text)) return;
     chat.add(Msg(true, text));
     _toBottom();
 
@@ -208,6 +210,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
       _say(mem);
       return;
     }
+    if (await _selfCommands(text)) return;
     if (await _appCommands(text)) return;
     if (await _dayCommands(text)) return;
     if (await _schedule(text)) return;
@@ -499,6 +502,20 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
         _say(say('Opening it…'));
         await _pause();
         _openNotif(n);
+      case 'vibe_setting':
+        if (preface.isNotEmpty) _say(preface);
+        await _applySetting(str('setting'));
+      case 'vibe_status':
+        if (preface.isNotEmpty) _say(preface);
+        final what = str('what');
+        if (what == 'offline_model') {
+          await _offlineModel();
+        } else {
+          await _checkStatus(withModel: what != 'ai_keys');
+        }
+      case 'download_offline_model':
+        if (preface.isNotEmpty) _say(preface);
+        await _offlineModel(wantDownload: true);
       case 'media_control':
         final action = str('action');
         if (preface.isNotEmpty) _say(preface);
@@ -847,7 +864,160 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
           ]),
         );
 
+    Widget pill(String label, VoidCallback? onTap, {bool primary = false}) => Padding(
+          padding: const EdgeInsets.only(right: 8, top: 8),
+          child: Material(
+            color: primary ? VC.blurple : c.input,
+            borderRadius: BorderRadius.circular(8),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(8),
+              onTap: onTap == null
+                  ? null
+                  : () {
+                      prefs.tap();
+                      onTap();
+                    },
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+                child: Text(label,
+                    style: TextStyle(
+                        color: primary ? Colors.white : c.text, fontWeight: FontWeight.w600, fontSize: 14)),
+              ),
+            ),
+          ),
+        );
+
     switch (card['type']) {
+      // Vibe checking itself: keys, offline AI, theme
+      case 'status':
+        return Container(
+          margin: const EdgeInsets.only(top: 6),
+          constraints: const BoxConstraints(maxWidth: 360),
+          decoration: box(),
+          padding: const EdgeInsets.fromLTRB(12, 6, 12, 6),
+          child: Column(children: [
+            for (final r in List<Map>.from(card['rows'] ?? const []))
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: Row(children: [
+                  Container(
+                    width: 9,
+                    height: 9,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: r['ok'] == true ? VC.green : r['ok'] == false ? VC.red : c.faint,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text('${r['label']}',
+                        style: TextStyle(color: c.text, fontWeight: FontWeight.w600, fontSize: 14.5)),
+                  ),
+                  Flexible(
+                    child: Text('${r['value']}',
+                        textAlign: TextAlign.right,
+                        style: TextStyle(color: r['ok'] == false ? VC.red : c.muted, fontSize: 13)),
+                  ),
+                ]),
+              ),
+          ]),
+        );
+      case 'ask':
+        final done = card['state'] != 'ask';
+        return Wrap(children: [
+          for (final b in List<Map>.from(card['buttons'] ?? const []))
+            pill('${b['label']}', done ? null : () => _onAsk(m, '${b['do']}'), primary: b['primary'] == true),
+        ]);
+      case 'models':
+        final picked = card['picked']?.toString();
+        return Container(
+          margin: const EdgeInsets.only(top: 6),
+          constraints: const BoxConstraints(maxWidth: 360),
+          decoration: box(),
+          child: Column(children: [
+            for (final it in List<Map>.from(card['items'] ?? const []))
+              InkWell(
+                borderRadius: BorderRadius.circular(10),
+                onTap: picked != null ? null : () => _pickModel(m, it),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+                  child: Row(children: [
+                    Container(
+                      width: 38,
+                      height: 38,
+                      decoration: BoxDecoration(color: VC.blurple, borderRadius: BorderRadius.circular(10)),
+                      child: Icon(
+                          switch (card['kind']) {
+                            'iconpack' => Icons.palette_rounded,
+                            'unhide' => Icons.visibility_rounded,
+                            'unmute' => Icons.notifications_active_rounded,
+                            'gemini' || 'groq' => Icons.auto_awesome_rounded,
+                            _ => Icons.phone_android_rounded,
+                          },
+                          color: Colors.white,
+                          size: 20),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        Text('${it['name']}',
+                            style: TextStyle(color: c.text, fontWeight: FontWeight.w700, fontSize: 15)),
+                        Text('${it['sub']}', style: TextStyle(color: c.faint, fontSize: 12)),
+                      ]),
+                    ),
+                    Icon(picked == it['id'] ? Icons.check_circle_rounded : card['kind'] == null ? Icons.download_rounded : Icons.chevron_right_rounded,
+                        color: picked == it['id'] ? VC.green : c.muted),
+                  ]),
+                ),
+              ),
+          ]),
+        );
+      case 'progress':
+        final done = (card['done'] as num?)?.toDouble() ?? 0;
+        final total = (card['total'] as num?)?.toDouble() ?? 0;
+        final st = card['state'];
+        final frac = st == 'done' ? 1.0 : (total > 0 ? (done / total).clamp(0.0, 1.0) : null);
+        String mb(double b) => b >= 1e9 ? '${(b / 1e9).toStringAsFixed(2)} GB' : '${(b / 1e6).toStringAsFixed(0)} MB';
+        final line = st == 'done'
+            ? 'Installed'
+            : st == 'failed'
+                ? 'Download stopped'
+                : total > 0
+                    ? '${mb(done)} of ${mb(total)} · ${((frac ?? 0) * 100).toStringAsFixed(0)}%'
+                    : done > 0
+                        ? '${mb(done)} downloaded'
+                        : 'Starting…';
+        return Container(
+          margin: const EdgeInsets.only(top: 6),
+          constraints: const BoxConstraints(maxWidth: 360),
+          decoration: box(),
+          padding: const EdgeInsets.all(12),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(children: [
+              Icon(st == 'done' ? Icons.check_circle_rounded : st == 'failed' ? Icons.error_rounded : Icons.downloading_rounded,
+                  size: 18, color: st == 'done' ? VC.green : st == 'failed' ? VC.red : VC.blurple),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text('${card['title']}', style: TextStyle(color: c.text, fontWeight: FontWeight.w700)),
+              ),
+              Text(line, style: TextStyle(color: c.muted, fontSize: 12)),
+            ]),
+            const SizedBox(height: 10),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(4),
+              child: TweenAnimationBuilder<double>(
+                tween: Tween(end: frac ?? 0),
+                duration: const Duration(milliseconds: 400),
+                builder: (_, v, __) => LinearProgressIndicator(
+                  value: frac == null ? null : v,
+                  minHeight: 6,
+                  backgroundColor: c.input,
+                  color: st == 'failed' ? VC.red : st == 'done' ? VC.green : VC.blurple,
+                ),
+              ),
+            ),
+          ]),
+        );
       case 'weather':
         return Container(
           margin: const EdgeInsets.only(top: 6),
@@ -1833,6 +2003,695 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
       }
     } else {
       _say('⏰ $text');
+    }
+  }
+
+  // ---------- Vibe's own settings by chat ----------
+  /// "dark mode", "follow system", "check my api keys", "is the offline AI downloaded?", "download offline model"
+  Future<bool> _selfCommands(String text) async {
+    final low = Brain.norm(text);
+    bool has(String re) => RegExp(re).hasMatch(low);
+    if (has(r'^(what|which) (version|app version)|^(vibe |app )?version$|^what version')) {
+      await _reply('You\'re on Vibe Launcher $vibeVersion.');
+      return true;
+    }
+    if (RegExp(r'^(what|why|how|does|do|can|should) ').hasMatch(low) && !low.contains('offline') && !low.contains('key')) {
+      return false;
+    }
+    if (await _moreSettings(low, text)) return true;
+    // Theme
+    if (has(r'\b(follow (the )?system|system (theme|mode|default)|auto (theme|dark mode)|same as (the )?(phone|system))\b')) {
+      await _applySetting('follow_system_theme');
+      return true;
+    }
+    if (has(r'\bdark (mode|theme)\b') && !has(r'\b(off|disable|turn off|no)\b')) {
+      await _applySetting('dark_mode');
+      return true;
+    }
+    if (has(r'\b(light|white) (mode|theme)\b') || has(r'\bdark (mode|theme) (off|disable)\b') ||
+        has(r'\b(turn off|disable) dark (mode|theme)\b')) {
+      await _applySetting('light_mode');
+      return true;
+    }
+    // Offline (on-phone) AI model
+    final model = has(r'\b(offline|on ?phone|on device|local|nano)\b') && has(r'\b(ai|model|llm|nano)\b');
+    if (model) {
+      final want = has(r'\b(download|install|get|setup|set up)\b') && !has(r'\b(is|are|did|has|have|downloaded|installed)\b');
+      await _offlineModel(wantDownload: want);
+      return true;
+    }
+    // AI keys
+    if (has(r'\b(api )?keys?\b') && has(r'\b(status|check|working|work|valid|test|ok)\b') ||
+        has(r'^(check |test )?(my )?(ai|vibe ai|vibe) (status|health|check)$') ||
+        has(r'^(check|test) (my )?(ai|api|apis|keys)( keys)?$') ||
+        has(r'^(vibe )?status( check)?$')) {
+      await _checkStatus();
+      return true;
+    }
+    return false;
+  }
+
+  Future<void> _applySetting(String s) async {
+    await Future.delayed(const Duration(milliseconds: 200));
+    switch (s) {
+      case 'dark_mode':
+        prefs.setTheme(ThemeMode.dark);
+        _say('🌙 Dark mode on.');
+      case 'light_mode':
+        prefs.setTheme(ThemeMode.light);
+        _say('☀️ Light mode on.');
+      case 'follow_system_theme':
+        prefs.setTheme(ThemeMode.system);
+        _say('🌗 Following your phone\'s theme now.');
+      case 'offline_mode_on':
+        prefs.setOfflineMode(true);
+        _say('📴 Offline mode on. I won\'t use the internet; questions wait until you turn it off.');
+      case 'offline_mode_off':
+        prefs.setOfflineMode(false);
+        _say('📶 Offline mode off.');
+        _drainQueue();
+      case 'compact_on':
+        prefs.setCompact(true);
+        _say('Compact messages on.');
+      case 'compact_off':
+        prefs.setCompact(false);
+        _say('Comfy spacing on.');
+      case 'main_ai_gemini' || 'main_ai_groq' || 'main_ai_cloudflare':
+        final ai = s.substring('main_ai_'.length);
+        final missing = (ai == 'gemini' && prefs.geminiKey.isEmpty) ||
+            (ai == 'groq' && prefs.groqKey.isEmpty) ||
+            (ai == 'cloudflare' && !Gemini.cloudflareChat);
+        if (missing) {
+          _say('There\'s no ${ai == 'gemini' ? 'Gemini' : ai == 'groq' ? 'Groq' : 'Cloudflare'} key yet. Add it in Vibe settings → Vibe AI.',
+              error: true);
+        } else {
+          prefs.setMainAi(ai);
+          _say('Main AI is now ${ai == 'gemini' ? 'Gemini' : ai == 'groq' ? 'Groq' : 'Cloudflare'}.');
+        }
+      default:
+        _say('I can\'t change that one from chat yet. It\'s in Vibe settings.');
+    }
+  }
+
+  /// Tests every AI key for real and shows a status card.
+  Future<void> _checkStatus({bool withModel = true}) async {
+    setState(() => _thinking = true);
+    try {
+      final online = !prefs.offlineMode && await Native.online();
+      Future<Map> row(String label, bool set, Future<String?> Function() test) async {
+        if (!set) return {'label': label, 'value': 'Not set', 'ok': null};
+        if (!online) return {'label': label, 'value': 'Set · can\'t test offline', 'ok': null};
+        final err = await test();
+        return {'label': label, 'value': err ?? 'Working', 'ok': err == null};
+      }
+
+      final rows = await Future.wait([
+        row('Gemini', prefs.geminiKey.isNotEmpty, () async => await Gemini.listModels() == null ? 'Key not working' : null),
+        row('Groq', prefs.groqKey.isNotEmpty, () async => await Gemini.listGroqModels() == null ? 'Key not working' : null),
+        row('Cloudflare', prefs.cfToken.isNotEmpty || prefs.cfAccount.isNotEmpty, Gemini.checkCloudflare),
+        row('OpenRouter (backup)', prefs.routerKey.isNotEmpty, Gemini.checkRouter),
+      ]);
+      final main = {'gemini': 'Gemini', 'groq': 'Groq', 'cloudflare': 'Cloudflare'}[prefs.mainAi] ?? 'Gemini';
+      rows.add({'label': 'Main AI', 'value': main, 'ok': null});
+      if (withModel) {
+        final st = await Native.nanoStatus();
+        _nano = st;
+        rows.add({
+          'label': 'Offline AI (Gemini Nano)',
+          'value': {
+                'available': 'Installed',
+                'downloadable': 'Not downloaded',
+                'downloading': 'Downloading…',
+              }[st] ??
+              'Not available on this phone',
+          'ok': st == 'available' ? true : null,
+        });
+      }
+      final bad = rows.where((r) => r['ok'] == false).length;
+      _say(bad == 0 ? 'Here\'s how Vibe AI is doing:' : 'Here\'s how Vibe AI is doing. $bad key${bad == 1 ? '' : 's'} need${bad == 1 ? 's' : ''} attention:',
+          card: {'type': 'status', 'rows': rows});
+      if (withModel && _nano == 'downloadable') {
+        _say('Want to download the offline AI so I can answer without internet?', card: {
+          'type': 'ask',
+          'state': 'ask',
+          'buttons': [
+            {'label': 'Show models', 'do': 'nano_models', 'primary': true},
+            {'label': 'Not now', 'do': 'cancel'},
+          ],
+        });
+      }
+    } finally {
+      if (mounted) setState(() => _thinking = false);
+    }
+  }
+
+  /// "Is the offline AI downloaded?" → status, offer to download, model list, progress, done.
+  Future<void> _offlineModel({bool wantDownload = false}) async {
+    final st = await Native.nanoStatus();
+    setState(() => _nano = st);
+    await Future.delayed(const Duration(milliseconds: 200));
+    switch (st) {
+      case 'available':
+        _say('✅ The offline AI (Gemini Nano) is installed. I can answer without internet, and nothing leaves your phone.',
+            local: true);
+      case 'downloading':
+        _say('⏬ The offline AI is downloading right now. I\'ll tell you when it\'s ready.');
+        if (!_nanoBusy) _startNanoDownload();
+      case 'downloadable':
+        if (wantDownload) {
+          _showModels();
+        } else {
+          _say('The offline AI isn\'t downloaded yet. Want to download it?', card: {
+            'type': 'ask',
+            'state': 'ask',
+            'buttons': [
+              {'label': 'Yes, show models', 'do': 'nano_models', 'primary': true},
+              {'label': 'Not now', 'do': 'cancel'},
+            ],
+          });
+        }
+      default:
+        _say('The offline AI isn\'t available on this phone right now. Update **Android AICore** and '
+            '**Private Compute Services** from the Play Store, restart the phone, then ask me again.');
+    }
+  }
+
+  void _showModels() {
+    _say('Offline AI models for your phone:', card: {
+      'type': 'models',
+      'items': [
+        {
+          'id': 'gemini-nano',
+          'name': 'Gemini Nano',
+          'sub': 'By Google · runs fully on your phone · private · Wi-Fi recommended',
+        },
+      ],
+    });
+  }
+
+  void _setCard(Msg m, Map card, {String? text}) {
+    final j = m.toJson();
+    j['x'] = card;
+    if (text != null) j['t'] = text;
+    chat.replace(m, Msg.fromJson(j));
+  }
+
+  Msg? _msgWithCard(String id) {
+    for (final m in chat.msgs.reversed) {
+      if (m.card?['id'] == id) return m;
+    }
+    return null;
+  }
+
+  void _onAsk(Msg m, String action) {
+    _setCard(m, Map.from(m.card!)..['state'] = action);
+    switch (action) {
+      case 'nano_models':
+        _showModels();
+      case 'cancel':
+        _say('Okay. Ask me "download offline model" anytime.');
+      case 'savekey':
+        _saveKey('${m.card!['id']}');
+      case 'dropkey':
+        _pendingKeys.remove('${m.card!['id']}');
+        _say('Okay, not saved.');
+    }
+  }
+
+  void _pickModel(Msg m, Map item) {
+    _setCard(m, Map.from(m.card!)..['picked'] = item['id']);
+    final id = '${item['id']}';
+    switch (m.card!['kind']) {
+      case 'gemini':
+        prefs.setGeminiModel(id == Gemini.defaultModel ? '' : id);
+        _say('Gemini model is now ${item['name']}.');
+      case 'groq':
+        prefs.setGroqModel(id == Gemini.groqDefault ? '' : id);
+        _say('Groq model is now $id.');
+      case 'iconpack':
+        prefs.setIconPack(id);
+        _say(id.isEmpty ? 'Back to system icons.' : 'Icon pack set: ${item['name']}.');
+        _refresh();
+      case 'unhide':
+        if (prefs.hidden.contains(id)) prefs.toggleHidden(id);
+        _say('${item['name']} is back in your apps.');
+      case 'unmute':
+        if (prefs.muted.contains(id)) prefs.toggleMuted(id);
+        _say('${item['name']} notifications show here again.');
+      default:
+        _startNanoDownload();
+    }
+  }
+
+  Future<void> _reply(String t, {Map? card, List<String> apps = const [], bool error = false}) async {
+    await Future.delayed(const Duration(milliseconds: 200));
+    _say(t, card: card, apps: apps, error: error);
+  }
+
+  /// On / off from words like "on", "enable", "off", "stop", "don't". Null = not said.
+  bool? _onOff(String low) {
+    if (RegExp(r'\b(off|disable|disabled|stop|no|don t|dont|do not|never|hide|without)\b').hasMatch(low)) return false;
+    if (RegExp(r'\b(on|enable|enabled|start|yes|show|turn on|use|with)\b').hasMatch(low)) return true;
+    return null;
+  }
+
+  AppEntry? _appFrom(String name) {
+    final found = Brain.match(Brain.norm(name), _apps);
+    return found.isEmpty ? null : found.first.app;
+  }
+
+  static const _accentNames = {
+    'blurple': 0, 'blue': 0, 'indigo': 0, 'green': 1, 'pink': 2, 'yellow': 3, 'gold': 3,
+    'orange': 4, 'sky': 5, 'light blue': 5, 'cyan': 5, 'purple': 6, 'violet': 6, 'red': 7,
+  };
+
+  /// Everything else in Vibe settings that chat can change. [low] is normalised, [raw] as typed.
+  Future<bool> _moreSettings(String low, String raw) async {
+    bool has(String re) => RegExp(re).hasMatch(low);
+    RegExpMatch? m(String re) => RegExp(re).firstMatch(low);
+    final onOff = _onOff(low);
+
+    // ----- Appearance -----
+    final acc = m(r'^(?:set |change |make )?(?:the |my )?(?:accent|theme colou?r|app colou?r|colou?r)(?: colou?r)?(?: to)? (blurple|blue|indigo|green|pink|yellow|gold|orange|sky|light blue|cyan|purple|violet|red)$') ??
+        m(r'^(blurple|blue|indigo|green|pink|yellow|gold|orange|sky|light blue|cyan|purple|violet|red) (accent|theme colou?r)$');
+    if (acc != null) {
+      final i = _accentNames[acc.group(1)]!;
+      prefs.setAccent(VC.accents[i].toARGB32());
+      await _reply('🎨 Accent colour is now ${acc.group(1)}.');
+      return true;
+    }
+    if (has(r'\bround (app )?icons?\b') && onOff != null) {
+      prefs.setRoundIcons(onOff);
+      await _reply(onOff ? 'Icons are round now.' : 'Icons keep their own shape now.');
+      return true;
+    }
+    if (has(r'\b(haptics?|vibration on taps?|tap vibrations?|vibrate on taps?)\b') && onOff != null) {
+      prefs.setHaptics(onOff);
+      await _reply(onOff ? 'Haptics on.' : 'Haptics off.');
+      return true;
+    }
+    if (has(r'\b(remove|clear|delete|reset) (the |my )?wallpaper\b') || has(r'^no wallpaper$')) {
+      prefs.setWallpaper('');
+      await _reply('Wallpaper removed.');
+      return true;
+    }
+    if (has(r'\bwallpaper\b') && has(r'\b(dim|darker|brighter|lighter|dimmer)\b')) {
+      int level = prefs.wallDim;
+      if (has(r'\b(light|lighter|brighter|less|low)\b')) {
+        level = has(r'\b(lighter|brighter|less)\b') ? (level - 1).clamp(0, 2) : 0;
+      } else if (has(r'\b(medium|middle)\b')) {
+        level = 1;
+      } else if (has(r'\b(strong|max|more|darker|high)\b')) {
+        level = has(r'\b(more|darker)\b') ? (level + 1).clamp(0, 2) : 2;
+      } else {
+        level = (level + 1).clamp(0, 2);
+      }
+      prefs.setWallDim(level);
+      await _reply('Wallpaper dim: ${['light', 'medium', 'strong'][level]}.');
+      return true;
+    }
+    if (has(r'\b(list|show|which|my)\b.*\bicon packs?\b') || has(r'^icon packs?$')) {
+      final packs = await Native.iconPacks();
+      if (packs.isEmpty) {
+        await _reply('You have no icon packs installed. Say "ps icon pack" to find some.');
+      } else {
+        await _reply('Your icon packs. Tap one to use it:', card: {
+          'type': 'models',
+          'kind': 'iconpack',
+          'items': [
+            {'id': '', 'name': 'System icons', 'sub': 'Each app\'s own icon'},
+            for (final p in packs) {'id': '${p['package']}', 'name': '${p['label']}', 'sub': 'Icon pack'},
+          ],
+        });
+      }
+      return true;
+    }
+    if (has(r'\b(system icons|default icons|remove (the )?icon pack|no icon pack)\b')) {
+      prefs.setIconPack('');
+      _refresh();
+      await _reply('Back to system icons.');
+      return true;
+    }
+    final ip = m(r'^(?:use|set|apply|change to) (?:the )?(?:icon pack )?(.+?)(?: icon pack| icons)?$');
+    if (ip != null && has(r'\bicon')) {
+      final packs = await Native.iconPacks();
+      final q = Brain.norm(ip.group(1)!.replaceAll('icon pack', ''));
+      final hit = packs.where((p) => Brain.norm('${p['label']}').contains(q) && q.isNotEmpty).toList();
+      if (hit.isEmpty) {
+        await _reply('I couldn\'t find an icon pack called "${ip.group(1)}". Say "list my icon packs".');
+      } else {
+        prefs.setIconPack('${hit.first['package']}');
+        _refresh();
+        await _reply('Icon pack set: ${hit.first['label']}.');
+      }
+      return true;
+    }
+    if (has(r'\b(compact|comfy|cozy|spacious) (messages|chat|spacing|mode|view)\b') || has(r'^(compact|comfy)$')) {
+      final compact = has(r'\bcompact\b') && onOff != false;
+      prefs.setCompact(compact);
+      await _reply(compact ? 'Compact messages on.' : 'Comfy spacing on.');
+      return true;
+    }
+
+    // ----- Apps -----
+    if (has(r'\bsort\b') && has(r'\bapps?\b|^sort')) {
+      if (has(r'\b(a ?to ?z|a z|alphabetical|alphabetically|by name|name)\b')) {
+        prefs.setSort(SortMode.az);
+        await _reply('Apps are sorted A–Z.');
+        return true;
+      }
+      if (has(r'\b(recent|recently|last used|usage)\b')) {
+        prefs.setSort(SortMode.recent);
+        await _reply('Apps are sorted by recently opened.');
+        return true;
+      }
+    }
+    if (has(r'^(show |list |my |see )*hidden apps$') || has(r'^what apps are hidden$')) {
+      final hidden = _apps.where((a) => prefs.hidden.contains(a.pkg)).toList();
+      if (hidden.isEmpty) {
+        await _reply('No apps are hidden.');
+      } else {
+        await _reply('Hidden apps. Tap one to bring it back:', card: {
+          'type': 'models',
+          'kind': 'unhide',
+          'items': [for (final a in hidden) {'id': a.pkg, 'name': a.label, 'sub': 'Hidden from your app list'}],
+        });
+      }
+      return true;
+    }
+    final unhide = m(r'^unhide (?:the )?(.+?)(?: app)?$');
+    if (unhide != null) {
+      final a = _apps.where((x) => prefs.hidden.contains(x.pkg)).toList();
+      final found = Brain.match(Brain.norm(unhide.group(1)!), a);
+      if (found.isEmpty) {
+        await _reply('"${unhide.group(1)}" isn\'t hidden.');
+      } else {
+        prefs.toggleHidden(found.first.app.pkg);
+        await _reply('${found.first.app.label} is back in your apps.', apps: [found.first.app.pkg]);
+      }
+      return true;
+    }
+    final hide = m(r'^hide (?:the )?(.+?)(?: app| from (?:my )?apps)?$');
+    if (hide != null && !has(r'\bnotifications?\b|\bkeyboard\b')) {
+      final a = _appFrom(hide.group(1)!);
+      if (a == null) {
+        await _reply('I couldn\'t find an app called "${hide.group(1)}".');
+      } else {
+        if (!prefs.hidden.contains(a.pkg)) prefs.toggleHidden(a.pkg);
+        await _reply('${a.label} is hidden. Say "unhide ${a.label}" to bring it back.');
+      }
+      return true;
+    }
+
+    // ----- Notifications -----
+    if (has(r'^(show |list |my |see )*muted apps$')) {
+      final muted = _apps.where((a) => prefs.muted.contains(a.pkg)).toList();
+      if (muted.isEmpty) {
+        await _reply('No apps are muted.');
+      } else {
+        await _reply('Muted apps. Tap one to unmute it:', card: {
+          'type': 'models',
+          'kind': 'unmute',
+          'items': [for (final a in muted) {'id': a.pkg, 'name': a.label, 'sub': 'Notifications hidden here'}],
+        });
+      }
+      return true;
+    }
+    final unmute = m(r'^unmute (?:the )?(.+?)(?: app| notifications)?$');
+    if (unmute != null) {
+      final a = _appFrom(unmute.group(1)!);
+      if (a == null || !prefs.muted.contains(a.pkg)) {
+        await _reply('"${unmute.group(1)}" isn\'t muted.');
+      } else {
+        prefs.toggleMuted(a.pkg);
+        await _reply('${a.label} notifications show here again.');
+      }
+      return true;
+    }
+    final mute = m(r'^mute (?:the )?(.+?)(?: app)?(?: notifications)?$');
+    if (mute != null && !has(r'^mute (the )?(phone|volume|sound|ringer|media)')) {
+      final a = _appFrom(mute.group(1)!);
+      if (a == null) {
+        await _reply('I couldn\'t find an app called "${mute.group(1)}".');
+      } else {
+        if (!prefs.muted.contains(a.pkg)) prefs.toggleMuted(a.pkg);
+        await _reply('Muted ${a.label}. Its notifications won\'t show here. Say "unmute ${a.label}" to undo.');
+      }
+      return true;
+    }
+    if (has(r'\b(music|song|songs|media) (updates|messages|notifications)\b') && onOff != null) {
+      prefs.setShowMedia(onOff);
+      await _reply(onOff ? '🎵 Music updates on.' : 'Music updates off.');
+      return true;
+    }
+    if (has(r'\b(ai|gemini|vibe ai)\b') && has(r'\bread\b') && has(r'\bnotifications?\b')) {
+      final allow = !has(r'\b(don t|dont|do not|stop|never|no)\b');
+      prefs.setAiNotifs(allow);
+      await _reply(allow
+          ? 'Vibe AI can read your recent notifications now (OTPs and bank alerts are still kept back).'
+          : '🔒 Vibe AI won\'t read your notifications anymore.');
+      return true;
+    }
+    if (has(r'\bnotification access\b')) {
+      await _reply('Opening notification access. Turn Vibe on there.');
+      Native.openNotifAccess();
+      return true;
+    }
+    if (has(r'\bnotifications?\b') && !has(r'\bsettings?\b|\bmusic\b|\bmuted?\b') &&
+        has(r'^(stop showing|stop|hide|don t show|dont show|do not show|show|turn (on|off)|enable|disable)\b|\b(in (the )?chat|here)\b|^notifications? (on|off)$')) {
+      final show = !has(r'\b(stop|hide|don t|dont|do not|off|disable)\b');
+      prefs.setShowNotifs(show);
+      await _reply(show ? 'Notifications show in chat again.' : 'Notifications won\'t show in chat anymore.');
+      return true;
+    }
+
+    // ----- People -----
+    final via = m(r'^(?:make |set )?(?:messages?|messaging|texts?|message someone)(?: should)? (?:use|uses|go (?:via|through)|by default use|default to) (whatsapp|sms)$') ??
+        m(r'^(?:always )?use (whatsapp|sms) (?:for|to send) (?:messages?|messaging|texts?)$');
+    if (via != null) {
+      final w = via.group(1)!.contains('whatsapp') ? 'whatsapp' : 'sms';
+      prefs.setMessenger(w);
+      await _reply('"Message someone" now uses ${w == 'whatsapp' ? 'WhatsApp' : 'SMS'}.');
+      return true;
+    }
+
+    // ----- Daily brief -----
+    final briefOnOff = has(r'\b(off|disable|stop|turn off|no more)\b')
+        ? false
+        : has(r'\b(on|enable|turn on|start)\b')
+            ? true
+            : null;
+    if (has(r'\b(daily |morning )?brief\b') && (briefOnOff != null || has(r'\bat \d'))) {
+      final onOff = briefOnOff;
+      final t = RegExp(r'\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b')
+          .firstMatch(low.replaceAllMapped(RegExp(r'(\d) (\d{2})\b'), (x) => '${x.group(1)}:${x.group(2)}'));
+      if (has(r'\bat \d') && t != null) {
+        var h = int.parse(t.group(1)!);
+        final min = int.tryParse(t.group(2) ?? '') ?? 0;
+        if (t.group(3) == 'pm' && h < 12) h += 12;
+        if (t.group(3) == 'am' && h == 12) h = 0;
+        if (h > 23 || min > 59) return false;
+        prefs.setBrief(true, hour: h, minute: min);
+        Native.requestPostNotif();
+        await scheduleBrief();
+        await _reply('☀️ Daily brief every day at ${TimeOfDay(hour: h, minute: min).format(context)}.');
+        return true;
+      }
+      if (onOff != null) {
+        prefs.setBrief(onOff);
+        if (onOff) Native.requestPostNotif();
+        await scheduleBrief();
+        await _reply(onOff
+            ? '☀️ Daily brief on, at ${TimeOfDay(hour: prefs.briefHour, minute: prefs.briefMinute).format(context)}.'
+            : 'Daily brief off.');
+        return true;
+      }
+    }
+
+    // ----- Vibe AI -----
+    if (has(r'\b(list|show|which)\b.*\bgemini models?\b') || has(r'^gemini models?$')) {
+      final list = await Gemini.listModels();
+      if (list == null) {
+        await _reply('I couldn\'t load Gemini models. Check your key with "check my AI keys".', error: true);
+      } else {
+        await _reply('Gemini models on your key. Tap one to use it:', card: {
+          'type': 'models',
+          'kind': 'gemini',
+          'items': [
+            {'id': Gemini.defaultModel, 'name': 'Default (newest Flash)', 'sub': Gemini.defaultModel},
+            for (final x in list.where((x) => x.id != Gemini.defaultModel).take(12))
+              {'id': x.id, 'name': x.label, 'sub': x.id},
+          ],
+        });
+      }
+      return true;
+    }
+    if (has(r'\b(list|show|which)\b.*\bgroq models?\b') || has(r'^groq models?$')) {
+      final list = prefs.groqKey.isEmpty ? null : await Gemini.listGroqModels();
+      if (list == null) {
+        await _reply('I couldn\'t load Groq models. Add or check your Groq key first.', error: true);
+      } else {
+        await _reply('Groq models (all free). Tap one to use it:', card: {
+          'type': 'models',
+          'kind': 'groq',
+          'items': [for (final x in list) {'id': x, 'name': x, 'sub': x == Gemini.groqDefault ? 'Default' : 'Groq'}],
+        });
+      }
+      return true;
+    }
+    final gm = m(r'^(?:use|switch to|change to) (?:gemini )?(flash lite|flash-lite|flashlite|flash|pro)(?: model)?$');
+    if (gm != null && (low.contains('gemini') || (low.contains('flash') && low.contains('lite')))) {
+      final g = gm.group(1)!;
+      final id = g.startsWith('flash') && g.contains('lite')
+          ? Gemini.fallbackModel
+          : g == 'pro'
+              ? 'gemini-pro-latest'
+              : Gemini.defaultModel;
+      prefs.setGeminiModel(id == Gemini.defaultModel ? '' : id);
+      await _reply('Gemini model is now $id.${g == 'pro' ? ' Pro has a much smaller free limit.' : ''}');
+      return true;
+    }
+    final main = m(r'^(?:use|switch to|change to|make|set) (?:the )?(?:main ai (?:to )?)?(gemini|groq|cloudflare)(?: (?:as )?(?:the )?(?:main )?(?:ai|brain))?$');
+    if (main != null) {
+      await _applySetting('main_ai_${main.group(1)}');
+      return true;
+    }
+    if (has(r'\bcloudflare (chat|ai)\b') && onOff != null) {
+      prefs.setCfChat(onOff);
+      if (!onOff && prefs.mainAi == 'cloudflare') prefs.setMainAi('gemini');
+      await _reply(onOff ? 'Cloudflare chat on.' : 'Cloudflare chat off. Pictures still work.');
+      return true;
+    }
+
+    // ----- Backup -----
+    if (has(r'^(please )?(back ?up|backup)( now| (my )?(chat|vibe|settings|everything))*$')) {
+      final d = DateTime.now();
+      final name =
+          'vibe-backup-${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}.json';
+      await _reply('Pick where to save the backup (keys aren\'t included; they stay encrypted on this phone).');
+      final ok = await Native.saveDoc(name, await Backup.export());
+      _say(ok ? '✅ Backup saved as $name.' : 'Backup not saved.', error: !ok);
+      return true;
+    }
+
+    // ----- Home app -----
+    if (has(r'\b(make|set|use) (vibe|this|this app|it)( as)?( my| the)? (default |home )+(app|launcher|screen)?\b') ||
+        has(r'^(make |set )?(vibe|this) (my )?(home app|default launcher|launcher)$')) {
+      if (await Native.isDefault()) {
+        await _reply('Vibe is already your home app. 🏠');
+      } else {
+        await _reply('Opening home app settings. Pick Vibe Launcher there.');
+        Native.openHomeSettings();
+      }
+      return true;
+    }
+    return false;
+  }
+
+  // ---------- API keys typed into the chat ----------
+  final Map<String, (String, String)> _pendingKeys = {}; // card id → (which, key). Never saved to disk.
+
+  static final _keyRes = <(String, RegExp)>[
+    ('gemini', RegExp(r'\bAIza[0-9A-Za-z_\-]{30,}')),
+    ('groq', RegExp(r'\bgsk_[A-Za-z0-9]{20,}')),
+    ('openrouter', RegExp(r'\bsk-or-v1-[A-Za-z0-9]{20,}')),
+    ('cfaccount', RegExp(r'(?<![0-9a-fA-F])[0-9a-fA-F]{32}(?![0-9a-fA-F])')),
+    ('cftoken', RegExp(r'(?<![A-Za-z0-9_\-])[A-Za-z0-9_\-]{40}(?![A-Za-z0-9_\-])')),
+  ];
+  static const _keyNames = {
+    'gemini': 'Gemini API key',
+    'groq': 'Groq API key',
+    'openrouter': 'OpenRouter key',
+    'cfaccount': 'Cloudflare account ID',
+    'cftoken': 'Cloudflare API token',
+  };
+
+  /// "my groq key is gsk_…": shows a hidden version and asks before saving. True when handled.
+  Future<bool> _keyInChat(String text) async {
+    final low = text.toLowerCase();
+    for (final (which, re) in _keyRes) {
+      final k = re.firstMatch(text);
+      if (k == null) continue;
+      // The two Cloudflare ones are plain-looking, so they need the word "cloudflare"
+      if (which.startsWith('cf') && !low.contains('cloudflare')) continue;
+      if (which == 'cfaccount' && !low.contains('account')) continue;
+      if (which == 'cftoken' && !low.contains('token')) continue;
+      final key = k.group(0)!;
+      final masked = text.replaceAll(key, '${key.substring(0, 4)}••••${key.substring(key.length - 4)}');
+      chat.add(Msg(true, masked));
+      _toBottom();
+      final id = 'key${DateTime.now().millisecondsSinceEpoch}';
+      _pendingKeys[id] = (which, key);
+      await _reply('Save this as your ${_keyNames[which]}? It\'s stored encrypted on this phone, never in the chat.', card: {
+        'type': 'ask',
+        'id': id,
+        'state': 'ask',
+        'buttons': [
+          {'label': 'Save key', 'do': 'savekey', 'primary': true},
+          {'label': 'Cancel', 'do': 'dropkey'},
+        ],
+      });
+      return true;
+    }
+    return false;
+  }
+
+  Future<void> _saveKey(String id) async {
+    final p = _pendingKeys.remove(id);
+    if (p == null) {
+      _say('That key wasn\'t kept (Vibe restarted). Paste it again.', error: true);
+      return;
+    }
+    final (which, key) = p;
+    switch (which) {
+      case 'gemini':
+        prefs.setGeminiKey(key);
+      case 'groq':
+        prefs.setGroqKey(key);
+      case 'openrouter':
+        prefs.setRouterKey(key);
+      case 'cfaccount':
+        prefs.setCloudflare(key, prefs.cfToken);
+      case 'cftoken':
+        prefs.setCloudflare(prefs.cfAccount, key);
+    }
+    _say('🔐 Saved your ${_keyNames[which]}. Checking it…');
+    await _checkStatus(withModel: false);
+  }
+
+  bool _nanoBusy = false;
+
+  Future<void> _startNanoDownload() async {
+    if (_nanoBusy) return;
+    _nanoBusy = true;
+    final id = 'dl${DateTime.now().millisecondsSinceEpoch}';
+    _say('Downloading Gemini Nano. Keep Wi-Fi on; you can keep using Vibe.',
+        card: {'type': 'progress', 'id': id, 'title': 'Gemini Nano', 'done': 0, 'total': 0, 'state': 'running'});
+    var last = 0;
+    var total = 0;
+    Native.onNanoProgress = (done, t) {
+      if (t > 0) total = t;
+      final now = DateTime.now().millisecondsSinceEpoch;
+      if (now - last < 700) return; // a few updates a second is plenty
+      last = now;
+      final m = _msgWithCard(id);
+      if (m != null) _setCard(m, Map.from(m.card!)..['done'] = done..['total'] = total);
+    };
+    var ok = false;
+    try {
+      ok = await Native.nanoDownload();
+    } catch (_) {}
+    Native.onNanoProgress = null;
+    _nanoBusy = false;
+    final st = await Native.nanoStatus();
+    if (mounted) setState(() => _nano = st);
+    final m = _msgWithCard(id);
+    if (m != null) _setCard(m, Map.from(m.card!)..['state'] = ok || st == 'available' ? 'done' : 'failed');
+    if (ok || st == 'available') {
+      _say('🎉 Offline model installed! I can now answer without internet, and nothing leaves your phone.', local: true);
+    } else {
+      _say('The download didn\'t finish. Check Wi-Fi and storage, then say "download offline model" to try again.',
+          error: true);
     }
   }
 

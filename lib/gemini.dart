@@ -30,7 +30,7 @@ class Gemini {
       prefs.routerKey.trim().isNotEmpty ||
       prefs.groqKey.trim().isNotEmpty ||
       cloudflareChat;
-  static bool get cloudflareChat => prefs.cfChat && prefs.cfAccount.isNotEmpty && prefs.cfToken.isNotEmpty;
+  static bool get cloudflareChat => prefs.cfChat && validCfAccount(prefs.cfAccount) && prefs.cfToken.isNotEmpty;
   static const groqDefault = 'openai/gpt-oss-120b';
   static const cfModel = '@cf/openai/gpt-oss-120b';
 
@@ -116,6 +116,20 @@ class Gemini {
         _fn('media_control', 'Control the music that is playing (or was last playing).', {
           'action': {'type': 'string', 'enum': ['play', 'pause', 'next', 'previous']},
         }, ['action']),
+        _fn('vibe_setting', 'Change one of Vibe\'s own settings (this launcher app itself, not the phone).', {
+          'setting': {
+            'type': 'string',
+            'enum': [
+              'dark_mode', 'light_mode', 'follow_system_theme', 'offline_mode_on', 'offline_mode_off',
+              'main_ai_gemini', 'main_ai_groq', 'main_ai_cloudflare', 'compact_on', 'compact_off'
+            ]
+          },
+        }, ['setting']),
+        _fn('vibe_status',
+            'Check Vibe\'s own health: whether the AI API keys work and whether the offline (on-phone) AI model '
+                'is downloaded. Use for "are my keys working", "is the offline model installed", "vibe status".',
+            {'what': {'type': 'string', 'enum': ['ai_keys', 'offline_model', 'everything']}}, ['what']),
+        _fn('download_offline_model', 'Show the offline AI models the user can download to the phone.', {}, []),
         _fn('reply_notification',
             'Reply to a chat notification listed in the context (WhatsApp, Telegram, SMS…). '
                 'Only for notifications marked [can reply].',
@@ -480,6 +494,38 @@ class Gemini {
       calls.add((name: '${f['name']}', args: args));
     }
     return GeminiResult(text: '${m['content'] ?? ''}'.trim(), calls: calls, via: via);
+  }
+
+  static bool validCfAccount(String id) => RegExp(r'^[0-9a-fA-F]{32}$').hasMatch(id.trim());
+
+  /// Null when the Cloudflare account ID and token work, otherwise what's wrong.
+  static Future<String?> checkCloudflare() async {
+    if (prefs.cfAccount.isEmpty) return 'Account ID missing';
+    if (!validCfAccount(prefs.cfAccount)) return 'Account ID is wrong';
+    if (prefs.cfToken.isEmpty) return 'Token missing';
+    return _get('https://api.cloudflare.com/client/v4/accounts/${prefs.cfAccount.trim()}/ai/models/search?per_page=1',
+        prefs.cfToken, 'Token not working');
+  }
+
+  /// Null when the OpenRouter key works.
+  static Future<String?> checkRouter() =>
+      _get('https://openrouter.ai/api/v1/key', prefs.routerKey, 'Key not working');
+
+  static Future<String?> _get(String url, String key, String bad) async {
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 12);
+    try {
+      final r = await client.getUrl(Uri.parse(url));
+      r.headers.set('Authorization', 'Bearer ${key.trim()}');
+      final res = await r.close().timeout(const Duration(seconds: 15));
+      await res.drain<void>();
+      if (res.statusCode == 200) return null;
+      if (res.statusCode == 401 || res.statusCode == 403 || res.statusCode == 400) return bad;
+      return 'Error ${res.statusCode}';
+    } catch (_) {
+      return 'Couldn\'t reach it';
+    } finally {
+      client.close();
+    }
   }
 
   /// Chat models on your Groq account, for the picker.

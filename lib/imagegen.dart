@@ -5,7 +5,8 @@ import 'launcher.dart';
 
 /// Makes pictures with Cloudflare Workers AI (FLUX), using your own free Cloudflare account.
 class ImageGen {
-  static bool get ready => prefs.cfAccount.isNotEmpty && prefs.cfToken.isNotEmpty;
+  static bool get ready =>
+      RegExp(r'^[0-9a-fA-F]{32}$').hasMatch(prefs.cfAccount.trim()) && prefs.cfToken.isNotEmpty;
 
   /// "draw a cat", "create an image of …", "make a wallpaper of …" → the prompt, or null.
   static ({String prompt, bool wallpaper})? parse(String input) {

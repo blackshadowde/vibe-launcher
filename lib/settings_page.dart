@@ -491,8 +491,16 @@ class SettingsPage extends StatelessWidget {
               leading: Icon(Icons.badge_rounded, color: c.muted),
               title: Text('Account ID', style: TextStyle(color: c.text)),
               subtitle: Text(prefs.cfAccount.isEmpty ? 'Not set' : prefs.cfAccount, style: TextStyle(color: c.faint)),
-              onTap: () => _editText(context, 'Cloudflare account ID', prefs.cfAccount,
-                  (v) => prefs.setCloudflare(v, prefs.cfToken), hint: '32 letters and numbers'),
+              onTap: () => _editText(context, 'Cloudflare account ID', prefs.cfAccount, (v) {
+                final t = v.trim();
+                if (t.isNotEmpty && !Gemini.validCfAccount(t)) {
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                      content: Text('That isn\'t an Account ID. It\'s the 32-character code after '
+                          'dash.cloudflare.com/ in the address bar, not your email.')));
+                  return;
+                }
+                prefs.setCloudflare(t, prefs.cfToken);
+              }, hint: '32 letters and numbers, not your email'),
             ),
             ListTile(
               leading: Icon(Icons.key_rounded, color: c.muted),
@@ -817,7 +825,7 @@ class SettingsPage extends StatelessWidget {
             ListTile(
               leading: Icon(Icons.info_outline_rounded, color: c.muted),
               title: Text('Vibe Launcher', style: TextStyle(color: c.text)),
-              subtitle: Text('Version 0.18.5', style: TextStyle(color: c.faint)),
+              subtitle: Text('Version $vibeVersion', style: TextStyle(color: c.faint)),
             ),
           ]),
           ],
