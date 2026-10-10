@@ -27,6 +27,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.StatFs
 import android.provider.AlarmClock
+import android.provider.CalendarContract
 import android.provider.CallLog
 import android.provider.ContactsContract
 import android.telephony.SmsManager
@@ -208,6 +209,30 @@ class MainActivity : FlutterActivity() {
                         result.success(false)
                     }
                 }
+                // ---------- Calendar ----------
+                "calPerms" -> result.success(has(Manifest.permission.READ_CALENDAR))
+                "requestCalendar" -> {
+                    if (has(Manifest.permission.READ_CALENDAR) && has(Manifest.permission.WRITE_CALENDAR)) result.success(true) else {
+                        permResult?.success(permMap())
+                        permResult = result
+                        requestPermissions(arrayOf(Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR), permCode)
+                    }
+                }
+                "events" -> Thread {
+                    val l = try {
+                        events(call.argument<Number>("from")!!.toLong(), call.argument<Number>("to")!!.toLong())
+                    } catch (e: Exception) { emptyList<Map<String, Any>>() }
+                    runOnUiThread { result.success(l) }
+                }.start()
+                "addEvent" -> result.success(addEvent(
+                    call.argument<String>("title") ?: "Event",
+                    call.argument<Number>("begin")!!.toLong(),
+                    call.argument<Number>("end")!!.toLong(),
+                    call.argument<Boolean>("allDay") ?: false,
+                    call.argument<String>("location") ?: ""
+                ))
+                "openEvent" -> result.success(open(Intent(Intent.ACTION_VIEW,
+                    ContentUris.withAppendedId(CalendarContract.Events.CONTENT_URI, (call.argument<Number>("id") ?: 0).toLong()))))
                 "takeShared" -> { result.success(pendingShare); pendingShare = null }
                 "filesDir" -> result.success(filesDir.absolutePath)
                 "listen" -> {
@@ -290,13 +315,95 @@ class MainActivity : FlutterActivity() {
         }
     } catch (e: Exception) { null }
 
+    private fun events(from: Long, to: Long): List<Map<String, Any>> {
+        if (!has(Manifest.permission.READ_CALENDAR)) return emptyList()
+        val uri = CalendarContract.Instances.CONTENT_URI.buildUpon()
+        ContentUris.appendId(uri, from)
+        ContentUris.appendId(uri, to)
+        val out = ArrayList<Map<String, Any>>()
+        contentResolver.query(
+            uri.build(),
+            arrayOf(
+                CalendarContract.Instances.EVENT_ID, CalendarContract.Instances.TITLE,
+                CalendarContract.Instances.BEGIN, CalendarContract.Instances.END,
+                CalendarContract.Instances.ALL_DAY, CalendarContract.Instances.EVENT_LOCATION,
+                CalendarContract.Instances.DISPLAY_COLOR
+            ),
+            null, null, CalendarContract.Instances.BEGIN + " ASC"
+        )?.use { c ->
+            while (c.moveToNext() && out.size < 50) {
+                out.add(mapOf(
+                    "id" to c.getLong(0),
+                    "title" to (c.getString(1) ?: "(No title)"),
+                    "begin" to c.getLong(2),
+                    "end" to c.getLong(3),
+                    "allDay" to (c.getInt(4) == 1),
+                    "location" to (c.getString(5) ?: ""),
+                    "color" to c.getInt(6)
+                ))
+            }
+        }
+        return out
+    }
+
+    /** Adds straight to your main calendar; without permission it opens the calendar app filled in. */
+    private fun addEvent(title: String, begin: Long, end: Long, allDay: Boolean, location: String): String {
+        if (has(Manifest.permission.WRITE_CALENDAR)) {
+            try {
+                var calId = -1L
+                contentResolver.query(
+                    CalendarContract.Calendars.CONTENT_URI,
+                    arrayOf(CalendarContract.Calendars._ID, CalendarContract.Calendars.IS_PRIMARY),
+                    CalendarContract.Calendars.VISIBLE + "=1 AND " + CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL + ">=" +
+                        CalendarContract.Calendars.CAL_ACCESS_CONTRIBUTOR,
+                    null, null
+                )?.use { c ->
+                    while (c.moveToNext()) {
+                        if (calId < 0 || c.getInt(1) == 1) calId = c.getLong(0)
+                        if (c.getInt(1) == 1) break
+                    }
+                }
+                if (calId >= 0) {
+                    val v = android.content.ContentValues().apply {
+                        put(CalendarContract.Events.CALENDAR_ID, calId)
+                        put(CalendarContract.Events.TITLE, title)
+                        put(CalendarContract.Events.DTSTART, begin)
+                        put(CalendarContract.Events.DTEND, end)
+                        put(CalendarContract.Events.ALL_DAY, if (allDay) 1 else 0)
+                        put(CalendarContract.Events.EVENT_TIMEZONE, if (allDay) "UTC" else java.util.TimeZone.getDefault().id)
+                        if (location.isNotEmpty()) put(CalendarContract.Events.EVENT_LOCATION, location)
+                        put(CalendarContract.Events.HAS_ALARM, 1)
+                    }
+                    val uri = contentResolver.insert(CalendarContract.Events.CONTENT_URI, v)
+                    val id = uri?.lastPathSegment?.toLongOrNull()
+                    if (id != null) {
+                        contentResolver.insert(CalendarContract.Reminders.CONTENT_URI, android.content.ContentValues().apply {
+                            put(CalendarContract.Reminders.EVENT_ID, id)
+                            put(CalendarContract.Reminders.MINUTES, 15)
+                            put(CalendarContract.Reminders.METHOD, CalendarContract.Reminders.METHOD_ALERT)
+                        })
+                        return "added:$id"
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+        val i = Intent(Intent.ACTION_INSERT, CalendarContract.Events.CONTENT_URI)
+            .putExtra(CalendarContract.Events.TITLE, title)
+            .putExtra(CalendarContract.EXTRA_EVENT_BEGIN_TIME, begin)
+            .putExtra(CalendarContract.EXTRA_EVENT_END_TIME, end)
+            .putExtra(CalendarContract.EXTRA_EVENT_ALL_DAY, allDay)
+        if (location.isNotEmpty()) i.putExtra(CalendarContract.Events.EVENT_LOCATION, location)
+        return if (open(i)) "opened" else "failed"
+    }
+
     private fun has(p: String) = checkSelfPermission(p) == PackageManager.PERMISSION_GRANTED
 
     private fun permMap(): Map<String, Boolean> = mapOf(
         "contacts" to has(Manifest.permission.READ_CONTACTS),
         "calls" to has(Manifest.permission.READ_CALL_LOG),
         "phone" to has(Manifest.permission.CALL_PHONE),
-        "sms" to has(Manifest.permission.SEND_SMS)
+        "sms" to has(Manifest.permission.SEND_SMS),
+        "calendar" to has(Manifest.permission.READ_CALENDAR)
     )
 
     private fun loadContacts(): List<Map<String, Any>> {
@@ -768,6 +875,17 @@ object Sched {
 
         val type = o.optString("type")
         val text = o.optString("text")
+        if (type == "brief") {
+            // Daily: book tomorrow's straight away
+            val next = org.json.JSONObject(o.toString())
+            var at = o.getLong("at")
+            while (at <= System.currentTimeMillis()) at += 24L * 60 * 60 * 1000
+            next.put("at", at)
+            val again = items(ctx)
+            again.put(next)
+            saveItems(ctx, again)
+            arm(ctx, next)
+        }
         val name = o.optString("name")
         val number = o.optString("number")
         val via = o.optString("via")
@@ -776,6 +894,10 @@ object Sched {
         var tap: Intent = ctx.packageManager.getLaunchIntentForPackage(ctx.packageName)
             ?: Intent(ctx, MainActivity::class.java)
 
+        if (type == "brief") {
+            title = "☀️ Your daily brief is ready"
+            body = "Weather, today's plans, missed calls and more"
+        }
         if (type == "message") {
             if (via == "sms") {
                 val late = System.currentTimeMillis() - o.getLong("at") > 60 * 60 * 1000
