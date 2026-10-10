@@ -1,4 +1,5 @@
 import 'dart:ui' show PlatformDispatcher;
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'home.dart';
@@ -12,8 +13,13 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   // Keep going after an error instead of showing a grey box, and report it in chat
   FlutterError.onError = (d) {
-    FlutterError.presentError(d);
-    noteError(d.exception, d.stack);
+    // Note it first: printing a very large error can itself fail
+    noteError(d.exception, d.stack, during: d.context?.toString());
+    if (kDebugMode) {
+      try {
+        FlutterError.presentError(d);
+      } catch (_) {}
+    }
   };
   PlatformDispatcher.instance.onError = (e, st) {
     noteError(e, st);

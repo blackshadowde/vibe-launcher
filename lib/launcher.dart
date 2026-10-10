@@ -420,9 +420,19 @@ String ago(int? ms) {
 /// Errors caught while Vibe keeps running; the home screen shows them in chat so they can be reported.
 final appErrors = ValueNotifier<String?>(null);
 final _seenErrors = <String>{};
-void noteError(Object e, StackTrace? st) {
-  final first = '$e'.split('\n').first;
-  if (first.length > 300 || !_seenErrors.add(first)) return;
-  final where = '$st'.split('\n').where((l) => l.contains('package:vibe_launcher')).take(3).join('\n');
-  appErrors.value = '$first${where.isEmpty ? '' : '\n$where'}';
+void noteError(Object e, StackTrace? st, {String? during}) {
+  try {
+    var first = e.runtimeType.toString();
+    try {
+      first = '$e'.split('\n').first;
+    } catch (_) {}
+    if (first.length > 300) first = '${first.substring(0, 300)}…';
+    if (!_seenErrors.add(first)) return;
+    final lines = '$st'.split('\n');
+    var where = lines.where((l) => l.contains('package:vibe_launcher')).take(4).join('\n');
+    if (where.isEmpty) where = lines.take(4).join('\n'); // no Vibe line: show where Flutter was
+    final d = during ?? '';
+    final ctx = d.isEmpty ? '' : '\n(${d.length > 150 ? d.substring(0, 150) : d})';
+    appErrors.value = '$first$ctx${where.trim().isEmpty ? '' : '\n$where'}';
+  } catch (_) {}
 }

@@ -2770,6 +2770,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     final prev = (n['prev'] ?? '').toString();
     final event = n['event'];
     final song = '"$title"${artist.isEmpty ? '' : ' · $artist'}';
+    // Already playing when Vibe (re)started: skip if this song is already in the recent timeline
+    if (n['initial'] == true &&
+        chat.msgs.reversed.take(30).any((x) => x.media && x.pkg == pkg && x.text.contains('"$title"'))) {
+      return;
+    }
     final text = event == 'pause' ? '⏸ Paused $song' : '▶ Playing $song';
     final m = Msg(false, text,
         ts: (n['time'] as num?)?.toInt(),
