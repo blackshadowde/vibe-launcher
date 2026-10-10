@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'theme.dart';
 
 /// One installed app. In the UI it's a "user" in the DM list.
 class AppEntry {
@@ -47,6 +48,24 @@ class Native {
   static Future<void> requestPostNotif() => _c.invokeMethod('requestPostNotif');
 
   static Future<bool> online() async => await _c.invokeMethod<bool>('online') ?? true;
+
+  // Icon packs
+  static Future<List<Map>> iconPacks() async => await _c.invokeListMethod<Map>('iconPacks') ?? [];
+
+  // Global search
+  static Future<List<Map>> searchSms(String q) async => await _c.invokeListMethod<Map>('searchSms', {'q': q}) ?? [];
+  static Future<List<Map>> searchFiles(String q) async => await _c.invokeListMethod<Map>('searchFiles', {'q': q}) ?? [];
+  static Future<List<Map>> searchEvents(String q) async =>
+      await _c.invokeListMethod<Map>('searchEvents', {'q': q}) ?? [];
+  static Future<void> openFile(String uri, String mime) => _c.invokeMethod('openFile', {'uri': uri, 'mime': mime});
+  static Future<Map> searchPerms() async => await _c.invokeMapMethod('searchPerms') ?? {};
+  static Future<void> requestSms() => _c.invokeMethod('requestSms');
+  static Future<void> requestFiles() => _c.invokeMethod('requestFiles');
+
+  // Backup & restore through Android's file picker
+  static Future<bool> saveDoc(String name, String text) async =>
+      await _c.invokeMethod<bool>('saveDoc', {'name': name, 'text': text}) ?? false;
+  static Future<String?> openDoc() => _c.invokeMethod<String>('openDoc');
 
   // On-phone AI (Gemini Nano)
   static Future<String> nanoStatus() async => await _c.invokeMethod<String>('nanoStatus') ?? 'unavailable';
@@ -96,7 +115,7 @@ class Native {
       await _c.invokeMethod<bool>('openNotif', {'key': key}) ?? false;
 
   static Future<List<AppEntry>> apps() async {
-    final raw = await _c.invokeListMethod<Map>('getApps') ?? [];
+    final raw = await _c.invokeListMethod<Map>('getApps', {'iconPack': prefs.iconPack}) ?? [];
     return raw
         .map((m) => AppEntry(m['label'] as String, m['package'] as String,
             m['icon'] as Uint8List, (m['category'] as int?) ?? -1))
@@ -163,6 +182,16 @@ class Prefs extends ChangeNotifier {
   String messenger = 'whatsapp'; // default for "message X": whatsapp or sms
   bool brief = false;
   bool offlineMode = false; // never use internet
+  // Look & feel
+  int accent = 0xFF5865F2;
+  String wallpaper = ''; // picture behind the chat
+  int wallDim = 1; // 0 light, 1 medium, 2 strong
+  bool compact = false; // tighter message spacing
+  String iconPack = ''; // package of an installed icon pack
+  bool roundIcons = true; // clip app icons into circles
+  // Gmail (optional, IMAP with an app password)
+  String gmailUser = '';
+  String gmailPass = '';
   List<int> queue = []; // timestamps of your questions waiting for internet
   int briefHour = 7, briefMinute = 30;
   String city = '';
@@ -202,6 +231,17 @@ class Prefs extends ChangeNotifier {
     messenger = _p.getString('messenger') ?? 'whatsapp';
     brief = _p.getBool('brief') ?? false;
     offlineMode = _p.getBool('offlineMode') ?? false;
+    accent = _p.getInt('accent') ?? 0xFF5865F2;
+    VC.accent = Color(accent);
+    wallpaper = _p.getString('wallpaper') ?? '';
+    wallDim = _p.getInt('wallDim') ?? 1;
+    compact = _p.getBool('compact') ?? false;
+    iconPack = _p.getString('iconPack') ?? '';
+    roundIcons = _p.getBool('roundIcons') ?? true;
+    gmailUser = _p.getString('gmailUser') ?? '';
+    try {
+      gmailPass = await _vault.read(key: 'gmailPass') ?? '';
+    } catch (_) {}
     queue = (_p.getStringList('queue') ?? []).map(int.parse).toList();
     briefHour = _p.getInt('briefHour') ?? 7;
     briefMinute = _p.getInt('briefMinute') ?? 30;
@@ -248,6 +288,20 @@ class Prefs extends ChangeNotifier {
   void setGeminiModel(String v) { geminiModel = v.trim(); _p.setString('geminiModel', geminiModel); notifyListeners(); }
 
   void setShowNotifs(bool v) { showNotifs = v; _p.setBool('showNotifs', v); notifyListeners(); }
+  void setAccent(int v) { accent = v; VC.accent = Color(v); _p.setInt('accent', v); notifyListeners(); }
+  void setWallpaper(String path) { wallpaper = path; _p.setString('wallpaper', path); notifyListeners(); }
+  void setWallDim(int v) { wallDim = v; _p.setInt('wallDim', v); notifyListeners(); }
+  void setCompact(bool v) { compact = v; _p.setBool('compact', v); notifyListeners(); }
+  void setIconPack(String v) { iconPack = v; _p.setString('iconPack', v); notifyListeners(); }
+  void setRoundIcons(bool v) { roundIcons = v; _p.setBool('roundIcons', v); notifyListeners(); }
+  void setGmail(String user, String pass) {
+    gmailUser = user.trim();
+    gmailPass = pass.replaceAll(' ', '').trim();
+    _p.setString('gmailUser', gmailUser);
+    _vault.write(key: 'gmailPass', value: gmailPass).catchError((_) {});
+    notifyListeners();
+  }
+
   void setOfflineMode(bool v) { offlineMode = v; _p.setBool('offlineMode', v); notifyListeners(); }
   void setQueue(List<int> q) { queue = q; _p.setStringList('queue', q.map((e) => '$e').toList()); notifyListeners(); }
 

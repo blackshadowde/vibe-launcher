@@ -51,15 +51,16 @@ class BotAvatar extends StatelessWidget {
   Widget build(BuildContext context) => Container(
         width: size,
         height: size,
-        decoration: const BoxDecoration(color: VC.blurple, shape: BoxShape.circle),
+        decoration: BoxDecoration(color: VC.blurple, shape: BoxShape.circle),
         child: Icon(Icons.bolt_rounded, color: Colors.white, size: size * 0.6),
       );
 }
 
-Widget appIcon(AppEntry a, double size) => ClipOval(
-      child: Image.memory(a.icon,
-          width: size, height: size, gaplessPlayback: true, filterQuality: FilterQuality.medium),
-    );
+/// App icon: round by default, or the icon's own shape (better with icon packs).
+Widget appIcon(AppEntry a, double size) {
+  final img = Image.memory(a.icon, width: size, height: size, gaplessPlayback: true, filterQuality: FilterQuality.medium);
+  return prefs.roundIcons ? ClipOval(child: img) : img;
+}
 
 /// One app as a DM row (used in the slide-in app list).
 class AppRow extends StatelessWidget {
@@ -259,7 +260,7 @@ Widget linkChips(List<Map> links, VC c) => Padding(
                     width: 18,
                     height: 18,
                     alignment: Alignment.center,
-                    decoration: const BoxDecoration(color: VC.blurple, shape: BoxShape.circle),
+                    decoration: BoxDecoration(color: VC.blurple, shape: BoxShape.circle),
                     child: Text('${i + 1}',
                         style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w700)),
                   ),

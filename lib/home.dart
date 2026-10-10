@@ -8,6 +8,7 @@ import 'launcher.dart';
 import 'main.dart';
 import 'memory.dart';
 import 'people.dart';
+import 'search.dart';
 import 'privacy.dart';
 import 'day.dart';
 import 'sched.dart';
@@ -52,6 +53,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     Native.onHomePressed = _goHome;
+    _pack = prefs.iconPack;
+    prefs.addListener(_prefsChanged);
     Native.onNotification = _onNotif;
     Native.onShared = _onShared;
     Native.onFired = _onFired;
@@ -86,8 +89,17 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     _refresh();
   }
 
+  String _pack = '';
+  void _prefsChanged() {
+    if (prefs.iconPack != _pack) {
+      _pack = prefs.iconPack;
+      _refresh(); // reload icons from the new pack
+    }
+  }
+
   @override
   void dispose() {
+    prefs.removeListener(_prefsChanged);
     WidgetsBinding.instance.removeObserver(this);
     _dc.dispose();
     _input.dispose();
@@ -1136,6 +1148,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
               Navigator.pop(ctx);
               _openDrawer();
             }),
+            tile(Icons.manage_search_rounded, const Color(0xFFF26522), 'Search', () {
+              Navigator.pop(ctx);
+              _openSearch();
+            }),
           ]),
         ),
       ),
@@ -1353,7 +1369,23 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
   }
 
   // ---------- Daily brief, weather, calendar ----------
+  void _openSearch([String q = '']) {
+    _focus.unfocus();
+    _closeDrawer();
+    SearchPage.open(context,
+        apps: _apps,
+        initial: q,
+        onLaunch: _launch,
+        onMailSettings: () => SettingsPage.openPage(context, 'SEARCH'));
+  }
+
   Future<bool> _dayCommands(String text) async {
+    // "find ravi's pdf", "search passport": global search on the phone (web searches go to Gemini)
+    final find = RegExp(r'^(?:find|search|look for|look up)(?:\s+for)?\s*(.*)$', caseSensitive: false).firstMatch(text.trim());
+    if (find != null && !RegExp(r'\b(google|web|online|internet|news|weather|price|score|wikipedia)\b', caseSensitive: false).hasMatch(text)) {
+      _openSearch(find.group(1)!.trim());
+      return true;
+    }
     final off = RegExp(r'^(?:turn\s+)?(?:offline|data saver|no internet)\s*mode\s*(on|off)?$|^(?:turn\s+)?(on|off)\s+(?:offline|data saver)\s*mode$',
             caseSensitive: false)
         .firstMatch(text.trim());
@@ -1701,6 +1733,14 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
           child: Scaffold(
             backgroundColor: c.chat,
             body: Stack(children: [
+              // Your wallpaper behind the chat, dimmed so text stays readable
+              if (prefs.wallpaper.isNotEmpty && File(prefs.wallpaper).existsSync())
+                Positioned.fill(
+                  child: Stack(fit: StackFit.expand, children: [
+                    Image.file(File(prefs.wallpaper), fit: BoxFit.cover, gaplessPlayback: true),
+                    ColoredBox(color: c.chat.withValues(alpha: const [0.45, 0.65, 0.82][prefs.wallDim.clamp(0, 2)])),
+                  ]),
+                ),
               // Swipe right anywhere on the chat to pull the app list in
               GestureDetector(
                 onHorizontalDragUpdate: _dragUpdate,
@@ -1737,7 +1777,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
                       child: GestureDetector(
                         onHorizontalDragUpdate: _dragUpdate,
                         onHorizontalDragEnd: _dragEnd,
-                        child: _AppDrawer(apps: _apps, loaded: _loaded, onLaunch: (a) {
+                        child: _AppDrawer(apps: _apps, loaded: _loaded, onSearch: () => _openSearch(), onLaunch: (a) {
                           _closeDrawer();
                           _launch(a);
                         }),
@@ -1792,7 +1832,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
                   Text(prefs.name,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: TextStyle(color: c.text, fontWeight: FontWeight.w700, fontSize: 19)),
+                      style: TextStyle(color: c.text, fontWeight: FontWeight.w700, fontSize: 19, shadows: c.nameShadows)),
                   AnimatedSwitcher(
                     duration: const Duration(milliseconds: 250),
                     child: Text(status,
@@ -1969,7 +2009,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
 
     Widget row;
     if (!head) {
-      row = Padding(padding: const EdgeInsets.fromLTRB(68, 4, 16, 2), child: content);
+      row = Padding(padding: EdgeInsets.fromLTRB(68, prefs.compact ? 1 : 4, 16, prefs.compact ? 0 : 2), child: content);
     } else {
       Widget avatar;
       String name;
@@ -1994,7 +2034,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
       }
       final hasQuote = m.quote != null;
       row = Padding(
-        padding: EdgeInsets.fromLTRB(16, hasQuote ? 10 : 12, 16, 2),
+        padding: EdgeInsets.fromLTRB(16, hasQuote ? (prefs.compact ? 6 : 10) : (prefs.compact ? 6 : 12), 16, prefs.compact ? 0 : 2),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           if (hasQuote)
             replyStrip(c,
@@ -2011,7 +2051,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
                     child: Text(name,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
-                            color: m.me ? c.muted : c.text, fontWeight: FontWeight.w600, fontSize: 16)),
+                            color: c.nameColor(m.me),
+                            shadows: c.nameShadows,
+                            fontWeight: FontWeight.w600,
+                            fontSize: 16)),
                   ),
                   if (!m.me && !m.isNotif) ...[
                     const SizedBox(width: 6),
@@ -2144,7 +2187,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
               child: Container(
                 width: big ? 52 : 44,
                 height: big ? 52 : 44,
-                decoration: big ? const BoxDecoration(color: VC.blurple, shape: BoxShape.circle) : null,
+                decoration: big ? BoxDecoration(color: VC.blurple, shape: BoxShape.circle) : null,
                 child: Icon(i, size: big ? 30 : 26, color: big ? Colors.white : c.text),
               ),
             );
@@ -2492,7 +2535,8 @@ class _AppDrawer extends StatefulWidget {
   final List<AppEntry> apps;
   final bool loaded;
   final void Function(AppEntry) onLaunch;
-  const _AppDrawer({required this.apps, required this.loaded, required this.onLaunch});
+  final VoidCallback? onSearch;
+  const _AppDrawer({required this.apps, required this.loaded, required this.onLaunch, this.onSearch});
   @override
   State<_AppDrawer> createState() => _AppDrawerState();
 }
@@ -2530,6 +2574,13 @@ class _AppDrawerState extends State<_AppDrawer> {
               Text('Apps', style: TextStyle(color: c.text, fontSize: 20, fontWeight: FontWeight.w800)),
               const SizedBox(width: 8),
               Text('${list.length}', style: TextStyle(color: c.faint, fontSize: 14)),
+              const Spacer(),
+              if (widget.onSearch != null)
+                IconButton(
+                  tooltip: 'Search everything',
+                  icon: Icon(Icons.manage_search_rounded, color: c.muted),
+                  onPressed: widget.onSearch,
+                ),
             ]),
           ),
           Padding(
@@ -2556,7 +2607,7 @@ class _AppDrawerState extends State<_AppDrawer> {
           ),
           Expanded(
             child: !widget.loaded
-                ? const Center(child: CircularProgressIndicator(color: VC.blurple))
+                ? Center(child: CircularProgressIndicator(color: VC.blurple))
                 : ListView.builder(
                     padding: const EdgeInsets.only(bottom: 8),
                     itemCount: list.length,
