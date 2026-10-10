@@ -16,6 +16,7 @@ import android.media.session.MediaController
 import android.media.session.MediaSessionManager
 import android.media.session.PlaybackState
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.net.Uri
 import android.os.BatteryManager
@@ -44,6 +45,7 @@ class MainActivity : FlutterActivity() {
     private val channelName = "vibe/launcher"
     private var channel: MethodChannel? = null
     private var listenResult: MethodChannel.Result? = null
+    private var pendingShare: Map<String, Any>? = null
     private var permResult: MethodChannel.Result? = null
     private val permCode = 4722
     private val peoplePerms = arrayOf(
@@ -58,6 +60,7 @@ class MainActivity : FlutterActivity() {
         super.configureFlutterEngine(engine)
         channel = MethodChannel(engine.dartExecutor.binaryMessenger, channelName)
         VibeNotifService.listener = { n -> channel?.invokeMethod("notif", n) }
+        pendingShare = readShare(intent)
         channel!!.setMethodCallHandler { call, result ->
             val pkg = call.argument<String>("package")
             when (call.method) {
@@ -190,6 +193,8 @@ class MainActivity : FlutterActivity() {
                             open(Intent(i).setPackage("com.whatsapp.w4b")) || open(i)
                     )
                 }
+                "takeShared" -> { result.success(pendingShare); pendingShare = null }
+                "filesDir" -> result.success(filesDir.absolutePath)
                 "listen" -> {
                     listenResult?.success(null)
                     listenResult = result
@@ -219,6 +224,10 @@ class MainActivity : FlutterActivity() {
     // Pressing Home while the launcher is already open: tell Flutter to go back to the main view
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        readShare(intent)?.let { s ->
+            pendingShare = null
+            channel?.invokeMethod("shared", s)
+        }
         if (intent.hasCategory(Intent.CATEGORY_HOME)) channel?.invokeMethod("homePressed", null)
     }
 
@@ -233,6 +242,37 @@ class MainActivity : FlutterActivity() {
     @Suppress("DEPRECATION")
     private fun smsManager(): SmsManager =
         if (Build.VERSION.SDK_INT >= 31) getSystemService(SmsManager::class.java) else SmsManager.getDefault()
+
+    /** Something shared to Vibe from another app: text/link, and/or a picture copied into our files. */
+    private fun readShare(i: Intent?): Map<String, Any>? {
+        if (i?.action != Intent.ACTION_SEND) return null
+        val out = HashMap<String, Any>()
+        i.getStringExtra(Intent.EXTRA_TEXT)?.let { if (it.isNotBlank()) out["text"] = it }
+        i.getStringExtra(Intent.EXTRA_SUBJECT)?.let { if (it.isNotBlank()) out["subject"] = it }
+        if (i.type?.startsWith("image/") == true) {
+            @Suppress("DEPRECATION")
+            val uri = i.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+            if (uri != null) saveImage(uri)?.let { out["image"] = it }
+        }
+        return if (out.isEmpty()) null else out
+    }
+
+    /** Copies a picture into Vibe's files, shrunk to at most ~1600px, as JPEG. */
+    private fun saveImage(uri: Uri): String? = try {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+        var sample = 1
+        while (bounds.outWidth / sample > 1600 || bounds.outHeight / sample > 1600) sample *= 2
+        val bmp = contentResolver.openInputStream(uri)?.use {
+            BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply { inSampleSize = sample })
+        }
+        if (bmp == null) null else {
+            val f = java.io.File(filesDir, "shared_${System.currentTimeMillis()}.jpg")
+            f.outputStream().use { bmp.compress(Bitmap.CompressFormat.JPEG, 85, it) }
+            bmp.recycle()
+            f.absolutePath
+        }
+    } catch (e: Exception) { null }
 
     private fun has(p: String) = checkSelfPermission(p) == PackageManager.PERMISSION_GRANTED
 
