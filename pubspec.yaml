@@ -1,7 +1,7 @@
 name: vibe_launcher
 description: A Discord-style Android launcher. Apps are users, notifications are messages.
 publish_to: 'none'
-version: 0.20.0+25
+version: 0.21.0+26
 
 environment:
   sdk: '>=3.4.0 <4.0.0'
@@ -12,6 +12,7 @@ dependencies:
   shared_preferences: ^2.3.2
   image_picker: ^1.1.2
   flutter_secure_storage: ^9.2.2
+  handy_tdlib_next: ^2.3.14 # Telegram (TDLib) with prebuilt libraries
 
 flutter:
   uses-material-design: true
