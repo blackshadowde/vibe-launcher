@@ -112,9 +112,32 @@ class SettingsPage extends StatelessWidget {
               subtitle: Text(prefs.geminiModel.isEmpty ? '${Gemini.defaultModel} (default)' : prefs.geminiModel,
                   style: TextStyle(color: c.faint)),
               trailing: Icon(Icons.chevron_right_rounded, color: c.faint),
-              onTap: () => _editText(context, 'Gemini model', prefs.geminiModel, prefs.setGeminiModel,
-                  hint: Gemini.defaultModel),
+              onTap: () => _pickModel(context),
             ),
+            if (prefs.geminiKey.isNotEmpty)
+              ListTile(
+                leading: const Icon(Icons.key_off_rounded, color: VC.red),
+                title: const Text('Remove API key', style: TextStyle(color: VC.red)),
+                subtitle: Text('Vibe goes back to opening apps only', style: TextStyle(color: c.faint)),
+                onTap: () async {
+                  final ok = await showDialog<bool>(
+                    context: context,
+                    builder: (ctx) => AlertDialog(
+                      title: Text('Remove Gemini key?', style: TextStyle(color: c.text)),
+                      content: Text('It will be deleted from this phone.', style: TextStyle(color: c.muted)),
+                      actions: [
+                        TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+                        FilledButton(
+                          style: FilledButton.styleFrom(backgroundColor: VC.red),
+                          onPressed: () => Navigator.pop(ctx, true),
+                          child: const Text('Remove'),
+                        ),
+                      ],
+                    ),
+                  );
+                  if (ok == true) prefs.setGeminiKey('');
+                },
+              ),
           ]),
           _section(c, 'FEEL'),
           _group(c, [
@@ -140,10 +163,73 @@ class SettingsPage extends StatelessWidget {
             ListTile(
               leading: Icon(Icons.info_outline_rounded, color: c.muted),
               title: Text('Vibe Launcher', style: TextStyle(color: c.text)),
-              subtitle: Text('Version 0.5.0', style: TextStyle(color: c.faint)),
+              subtitle: Text('Version 0.6.0', style: TextStyle(color: c.faint)),
             ),
           ]),
         ]),
+      ),
+    );
+  }
+
+  /// Bottom sheet listing the models your key can use.
+  void _pickModel(BuildContext context) {
+    final c = VC.of(context);
+    if (prefs.geminiKey.isEmpty) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Add your Gemini API key first')));
+      return;
+    }
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (ctx) => SizedBox(
+        height: MediaQuery.of(ctx).size.height * 0.7,
+        child: FutureBuilder<List<({String id, String label})>?>(
+          future: Gemini.listModels(),
+          builder: (ctx, snap) {
+            if (snap.connectionState != ConnectionState.done) {
+              return const Center(child: CircularProgressIndicator(color: VC.blurple));
+            }
+            final list = snap.data;
+            Widget tile(String id, String label, String sub) {
+              final on = (prefs.geminiModel.isEmpty ? Gemini.defaultModel : prefs.geminiModel) == id;
+              return ListTile(
+                title: Text(label, style: TextStyle(color: c.text, fontWeight: FontWeight.w600)),
+                subtitle: Text(sub, style: TextStyle(color: c.faint, fontSize: 12)),
+                trailing: Icon(on ? Icons.radio_button_checked_rounded : Icons.radio_button_off_rounded,
+                    color: on ? VC.blurple : c.faint),
+                onTap: () {
+                  prefs.setGeminiModel(id == Gemini.defaultModel ? '' : id);
+                  Navigator.pop(ctx);
+                },
+              );
+            }
+
+            return ListView(children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+                child: Text('Choose a Gemini model',
+                    style: TextStyle(color: c.text, fontSize: 18, fontWeight: FontWeight.w800)),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+                child: Text('Flash-Lite is fastest. "latest" models update by themselves.',
+                    style: TextStyle(color: c.muted, fontSize: 13)),
+              ),
+              tile(Gemini.defaultModel, 'Default', '${Gemini.defaultModel} · always the newest Flash'),
+              if (list == null)
+                Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: Text('Couldn\'t load the model list. Check your key and connection.',
+                      style: TextStyle(color: VC.red)),
+                )
+              else
+                for (final m in list.where((m) => m.id != Gemini.defaultModel)) tile(m.id, m.label, m.id),
+              const SizedBox(height: 16),
+            ]);
+          },
+        ),
       ),
     );
   }

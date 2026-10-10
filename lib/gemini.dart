@@ -117,12 +117,18 @@ class Gemini {
   /// Recent chat as Gemini turns (text only), merged so roles alternate.
   static List<Map> _history(List<Msg> msgs) {
     final out = <Map>[];
-    final talk = msgs.where((m) => !m.isNotif && m.text.trim().isNotEmpty).toList();
+    // Error lines aren't real answers, so leave them out
+    final talk = msgs.where((m) => !m.isNotif && !m.error && m.text.trim().isNotEmpty).toList();
     for (final m in talk.length > 16 ? talk.sublist(talk.length - 16) : talk) {
       final role = m.me ? 'user' : 'model';
       final text = m.quote != null ? '(my reply to ${m.quote}) ${m.text}' : m.text;
       if (out.isNotEmpty && out.last['role'] == role) {
-        (out.last['parts'] as List).add({'text': text});
+        if (role == 'user') {
+          // An earlier message that never got an answer: drop it so Gemini answers the newest one
+          out[out.length - 1] = {'role': 'user', 'parts': [{'text': text}]};
+        } else {
+          (out.last['parts'] as List).add({'text': text});
+        }
       } else {
         out.add({'role': role, 'parts': [{'text': text}]});
       }
@@ -163,6 +169,38 @@ class Gemini {
       ],
     };
     return _post(body);
+  }
+
+  /// Models your key can use for chat, newest-looking first. Null = couldn't load.
+  static Future<List<({String id, String label})>?> listModels() async {
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 15);
+    try {
+      final req = await client.getUrl(
+          Uri.parse('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200'));
+      req.headers.set('x-goog-api-key', prefs.geminiKey.trim());
+      final res = await req.close().timeout(const Duration(seconds: 20));
+      final raw = await res.transform(utf8.decoder).join();
+      if (res.statusCode != 200) return null;
+      final out = <({String id, String label})>[];
+      for (final m in (jsonDecode(raw)['models'] as List? ?? [])) {
+        if (m is! Map) continue;
+        final id = (m['name'] ?? '').toString().replaceFirst('models/', '');
+        final methods = (m['supportedGenerationMethods'] as List? ?? []).map((e) => e.toString());
+        if (!id.startsWith('gemini') || !methods.contains('generateContent')) continue;
+        if (RegExp(r'embedding|tts|image|audio|live|vision|robotics|computer-use|native').hasMatch(id)) continue;
+        out.add((id: id, label: (m['displayName'] ?? id).toString()));
+      }
+      int rank(String id) => id.endsWith('-latest') ? 0 : id.contains('preview') || id.contains('exp') ? 2 : 1;
+      out.sort((a, b) {
+        final r = rank(a.id).compareTo(rank(b.id));
+        return r != 0 ? r : b.id.compareTo(a.id);
+      });
+      return out;
+    } catch (_) {
+      return null;
+    } finally {
+      client.close();
+    }
   }
 
   /// Tries your model, waits and tries again if it's busy, then falls back to the lighter model.
@@ -258,8 +296,10 @@ class Gemini {
       return GeminiResult(retry: 'busy');
     } on HandshakeException {
       return GeminiResult(error: 'Couldn\'t reach Gemini securely. Check your connection.');
+    } on IOException {
+      return GeminiResult(retry: 'busy'); // connection dropped mid-way: worth another try
     } catch (e) {
-      return GeminiResult(error: 'Something went wrong talking to Gemini.');
+      return GeminiResult(error: 'Something went wrong talking to Gemini (${e.runtimeType}).');
     } finally {
       client.close();
     }

@@ -16,8 +16,10 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
-  final _scaffold = GlobalKey<ScaffoldState>();
+class _HomePageState extends State<HomePage> with WidgetsBindingObserver, SingleTickerProviderStateMixin {
+  /// App list panel: 0 = hidden, 1 = fully open. Follows your finger.
+  late final AnimationController _dc =
+      AnimationController(vsync: this, duration: const Duration(milliseconds: 260));
   final _input = TextEditingController();
   final _focus = FocusNode();
   final _scroll = ScrollController();
@@ -48,6 +50,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _dc.dispose();
     _input.dispose();
     _focus.dispose();
     _scroll.dispose();
@@ -77,7 +80,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   void _goHome() {
     navKey.currentState?.popUntil((r) => r.isFirst);
-    _scaffold.currentState?.closeDrawer();
+    _closeDrawer();
     _focus.unfocus();
     _toBottom();
   }
@@ -168,7 +171,27 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   void _openDrawer() {
     _focus.unfocus();
-    _scaffold.currentState?.openDrawer();
+    _dc.animateTo(1, curve: Curves.easeOutCubic);
+  }
+
+  void _closeDrawer() => _dc.animateBack(0, curve: Curves.easeOutCubic);
+
+  double get _panelW => MediaQuery.of(context).size.width * 0.86;
+
+  void _dragUpdate(DragUpdateDetails d) {
+    if (_dc.value == 0 && (d.primaryDelta ?? 0) > 0) _focus.unfocus();
+    _dc.value = (_dc.value + (d.primaryDelta ?? 0) / _panelW).clamp(0.0, 1.0);
+  }
+
+  void _dragEnd(DragEndDetails d) {
+    final v = d.primaryVelocity ?? 0;
+    if (v > 300) {
+      _openDrawer();
+    } else if (v < -300) {
+      _closeDrawer();
+    } else {
+      _dc.value > 0.5 ? _openDrawer() : _closeDrawer();
+    }
   }
 
   void _openLauncherSettings() {
@@ -326,29 +349,63 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         child: PopScope(
           canPop: false, // Back never closes the launcher
           onPopInvokedWithResult: (_, __) {
-            if (_scaffold.currentState?.isDrawerOpen == true) {
-              _scaffold.currentState!.closeDrawer();
+            if (_replyTo != null) {
+              setState(() => _replyTo = null);
+            } else if (_dc.value > 0) {
+              _closeDrawer();
             } else {
               _goHome();
             }
           },
           child: Scaffold(
-            key: _scaffold,
             backgroundColor: c.chat,
-            drawerEdgeDragWidth: 40,
-            drawer: _AppDrawer(apps: _apps, loaded: _loaded, onLaunch: (a) {
-              _scaffold.currentState?.closeDrawer();
-              _launch(a);
-            }),
-            body: SafeArea(
-              child: Column(children: [
-                _header(c),
-                if (!_isDefault && _loaded) _defaultBanner(),
-                if (_isDefault && !_notifAccess && _loaded && prefs.showNotifs) _notifBanner(),
-                Expanded(child: _timeline(c)),
-                _inputBar(c),
-              ]),
-            ),
+            body: Stack(children: [
+              // Swipe right anywhere on the chat to pull the app list in
+              GestureDetector(
+                onHorizontalDragUpdate: _dragUpdate,
+                onHorizontalDragEnd: _dragEnd,
+                child: SafeArea(
+                  child: Column(children: [
+                    _header(c),
+                    if (!_isDefault && _loaded) _defaultBanner(),
+                    if (_isDefault && !_notifAccess && _loaded && prefs.showNotifs) _notifBanner(),
+                    Expanded(child: _timeline(c)),
+                    _inputBar(c),
+                  ]),
+                ),
+              ),
+              AnimatedBuilder(
+                animation: _dc,
+                builder: (context, _) {
+                  if (_dc.value == 0) return const SizedBox.shrink();
+                  final w = _panelW;
+                  return Stack(children: [
+                    Positioned.fill(
+                      child: GestureDetector(
+                        onTap: _closeDrawer,
+                        onHorizontalDragUpdate: _dragUpdate,
+                        onHorizontalDragEnd: _dragEnd,
+                        child: ColoredBox(color: Colors.black.withValues(alpha: 0.5 * _dc.value)),
+                      ),
+                    ),
+                    Positioned(
+                      top: 0,
+                      bottom: 0,
+                      left: -w * (1 - _dc.value),
+                      width: w,
+                      child: GestureDetector(
+                        onHorizontalDragUpdate: _dragUpdate,
+                        onHorizontalDragEnd: _dragEnd,
+                        child: _AppDrawer(apps: _apps, loaded: _loaded, onLaunch: (a) {
+                          _closeDrawer();
+                          _launch(a);
+                        }),
+                      ),
+                    ),
+                  ]);
+                },
+              ),
+            ]),
           ),
         ),
       ),
@@ -388,7 +445,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           IconButton(
             tooltip: 'All apps',
             icon: Icon(Icons.apps_rounded, color: c.muted),
-            onPressed: () { prefs.tap(); _focus.unfocus(); _scaffold.currentState?.openDrawer(); },
+            onPressed: () { prefs.tap(); _openDrawer(); },
           ),
           // Tap = phone settings, long-press = launcher settings
           GestureDetector(
@@ -843,7 +900,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                 shape: const CircleBorder(),
                 child: InkWell(
                   customBorder: const CircleBorder(),
-                  onTap: () { prefs.tap(); _focus.unfocus(); _scaffold.currentState?.openDrawer(); },
+                  onTap: () { prefs.tap(); _openDrawer(); },
                   child: Padding(
                     padding: const EdgeInsets.all(9),
                     child: Icon(Icons.add_rounded, color: c.muted, size: 24),
@@ -954,11 +1011,12 @@ class _AppDrawerState extends State<_AppDrawer> {
         return d != 0 ? d : byName(a, b);
       });
     }
-    return Drawer(
-      backgroundColor: c.pane,
-      width: MediaQuery.of(context).size.width * 0.86,
+    return Material(
+      color: c.pane,
+      elevation: 16,
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.horizontal(right: Radius.circular(16))),
+      clipBehavior: Clip.antiAlias,
       child: SafeArea(
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Padding(
