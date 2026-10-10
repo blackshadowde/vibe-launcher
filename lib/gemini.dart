@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'chat.dart';
 import 'launcher.dart';
+import 'memory.dart';
 
 typedef Call = ({String name, Map<String, dynamic> args});
 typedef Source = ({String title, String url});
@@ -60,6 +61,13 @@ class Gemini {
             },
             ['name']),
         _fn('recent_calls', 'Show recent and missed phone calls.', {}, []),
+        _fn('remember',
+            'Save a lasting fact about the user or people in their life, when they ask you to remember '
+                'something or clearly tell you such a fact (e.g. "my brother is Ravi", "I\'m vegetarian").',
+            {'fact': _s('The fact, written short and in third person-free form, e.g. "Brother is Ravi"')},
+            ['fact']),
+        _fn('forget', 'Delete a remembered fact when the user asks you to forget it.',
+            {'about': _s('Words that identify the fact')}, ['about']),
         _fn('media_control', 'Control the music that is playing (or was last playing).', {
           'action': {'type': 'string', 'enum': ['play', 'pause', 'next', 'previous']},
         }, ['action']),
@@ -94,6 +102,7 @@ class Gemini {
         'User\'s name: ${prefs.name}. '
         'Installed apps: ${names.join(', ')}.'
         '${_music(notifs)}'
+        '${memory.facts.isEmpty ? '' : '\n\nThings the user asked you to remember:\n${memory.facts.map((f) => '- $f').join('\n')}'}'
         '${_notifBlock(notifs)}';
   }
 

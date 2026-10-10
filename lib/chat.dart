@@ -149,6 +149,7 @@ class Brain {
       '• "clear chat"\n'
       '• "pause", "play", "next", "previous" for music\n'
       '• "call mom", "message Ravi I\'ll be late", "whatsapp Priya hi", "who called me?"\n'
+      '• "remember my brother is Ravi", "what do you remember", "forget …"\n'
       '• Long-press my avatar for your recent apps\n'
       'Notifications show up here: tap Reply to answer, long-press to mute an app.\n'
       'With a Gemini key (launcher settings) you can also just talk to me: ask questions, '

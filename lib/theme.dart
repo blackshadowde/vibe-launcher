@@ -28,6 +28,7 @@ ThemeData vibeTheme(Brightness b) {
   return ThemeData(
     brightness: b,
     useMaterial3: true,
+    fontFamily: 'GGSans',
     scaffoldBackgroundColor: c.pane,
     colorScheme: ColorScheme.fromSeed(
         seedColor: VC.blurple, brightness: b, primary: VC.blurple, surface: c.pane),

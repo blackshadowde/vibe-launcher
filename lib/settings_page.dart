@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'gemini.dart';
 import 'launcher.dart';
+import 'memory.dart';
 import 'people.dart';
 import 'theme.dart';
 
@@ -117,6 +118,17 @@ class SettingsPage extends StatelessWidget {
                 () => prefs.setMessenger('whatsapp')),
             _radio(c, '"Message someone" uses SMS', prefs.messenger == 'sms', () => prefs.setMessenger('sms')),
           ]),
+          _section(c, 'MEMORY'),
+          _group(c, [
+            ListTile(
+              leading: Icon(Icons.psychology_rounded, color: c.muted),
+              title: Text('What Vibe remembers', style: TextStyle(color: c.text)),
+              subtitle: Text('${memory.facts.length} things · stored only on this phone',
+                  style: TextStyle(color: c.faint)),
+              trailing: Icon(Icons.chevron_right_rounded, color: c.faint),
+              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const _MemoryPage())),
+            ),
+          ]),
           _section(c, 'VIBE AI (GEMINI)'),
           _group(c, [
             ListTile(
@@ -194,7 +206,7 @@ class SettingsPage extends StatelessWidget {
             ListTile(
               leading: Icon(Icons.info_outline_rounded, color: c.muted),
               title: Text('Vibe Launcher', style: TextStyle(color: c.text)),
-              subtitle: Text('Version 0.8.0', style: TextStyle(color: c.faint)),
+              subtitle: Text('Version 0.9.0', style: TextStyle(color: c.faint)),
             ),
           ]),
         ]),
@@ -324,6 +336,103 @@ class SettingsPage extends StatelessWidget {
             color: on ? VC.blurple : c.faint),
         onTap: () { prefs.tap(); onTap(); },
       );
+}
+
+/// Everything Vibe remembers, with delete and add.
+class _MemoryPage extends StatelessWidget {
+  const _MemoryPage();
+
+  Future<void> _add(BuildContext context) async {
+    final c = VC.of(context);
+    final ctrl = TextEditingController();
+    final v = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Remember…', style: TextStyle(color: c.text)),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          maxLines: 3,
+          minLines: 1,
+          textCapitalization: TextCapitalization.sentences,
+          style: TextStyle(color: c.text),
+          decoration: const InputDecoration(hintText: 'e.g. My brother is Ravi'),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, ctrl.text), child: const Text('Save')),
+        ],
+      ),
+    );
+    if (v != null && v.trim().isNotEmpty) memory.add(v);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = VC.of(context);
+    return ListenableBuilder(
+      listenable: memory,
+      builder: (context, _) => Scaffold(
+        backgroundColor: c.chat,
+        appBar: AppBar(
+          backgroundColor: c.chat,
+          title: const Text('What Vibe remembers'),
+          actions: [
+            if (memory.facts.isNotEmpty)
+              TextButton(
+                onPressed: () async {
+                  final ok = await showDialog<bool>(
+                    context: context,
+                    builder: (ctx) => AlertDialog(
+                      title: Text('Forget everything?', style: TextStyle(color: c.text)),
+                      actions: [
+                        TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+                        FilledButton(
+                          style: FilledButton.styleFrom(backgroundColor: VC.red),
+                          onPressed: () => Navigator.pop(ctx, true),
+                          child: const Text('Forget all'),
+                        ),
+                      ],
+                    ),
+                  );
+                  if (ok == true) memory.clear();
+                },
+                child: const Text('Clear', style: TextStyle(color: VC.red)),
+              ),
+          ],
+        ),
+        floatingActionButton: FloatingActionButton(
+          backgroundColor: VC.blurple,
+          foregroundColor: Colors.white,
+          onPressed: () => _add(context),
+          child: const Icon(Icons.add_rounded),
+        ),
+        body: memory.facts.isEmpty
+            ? Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(32),
+                  child: Text('Nothing yet.\nTell Vibe "remember my brother is Ravi" or tap +.',
+                      textAlign: TextAlign.center, style: TextStyle(color: c.muted, fontSize: 15)),
+                ),
+              )
+            : ListView.builder(
+                padding: const EdgeInsets.only(bottom: 88),
+                itemCount: memory.facts.length,
+                itemBuilder: (_, i) {
+                  final idx = memory.facts.length - 1 - i; // newest first
+                  return ListTile(
+                    leading: Icon(Icons.bookmark_rounded, color: VC.blurple),
+                    title: Text(memory.facts[idx], style: TextStyle(color: c.text)),
+                    trailing: IconButton(
+                      icon: Icon(Icons.close_rounded, color: c.faint),
+                      onPressed: () => memory.removeAt(idx),
+                    ),
+                  );
+                },
+              ),
+      ),
+    );
+  }
 }
 
 /// Hidden apps or muted apps: one switch per app.

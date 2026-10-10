@@ -4,6 +4,7 @@ import 'chat.dart';
 import 'gemini.dart';
 import 'launcher.dart';
 import 'main.dart';
+import 'memory.dart';
 import 'people.dart';
 import 'profile_sheet.dart';
 import 'settings_page.dart';
@@ -28,6 +29,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
   bool _isDefault = true;
   bool _loaded = false;
   bool _thinking = false;
+  /// Messages already on screen when Vibe opened (or already animated): no entrance for them.
+  final Set<String> _known = {};
+  bool _firstPaint = true;
+  String _idOf(Msg m) => '${m.ts}:${m.text.hashCode}:${m.me}';
   bool _notifAccess = true;
   Msg? _replyTo;
   List<Msg> _askedNotifs = [];
@@ -39,6 +44,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     Native.onHomePressed = _goHome;
     Native.onNotification = _onNotif;
     chat.load();
+    _known.addAll(chat.msgs.map(_idOf));
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      Future.delayed(const Duration(milliseconds: 800), () => _firstPaint = false);
+    });
     if (chat.msgs.isEmpty) {
       chat.add(Msg(false,
           'Hi! I\'m Vibe, your launcher. Tell me what to open, like "open calendar" or just "calendar". '
@@ -127,6 +136,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     chat.add(Msg(true, text));
     _toBottom();
 
+    final mem = memory.handle(text);
+    if (mem != null) {
+      await Future.delayed(const Duration(milliseconds: 250));
+      _say(mem);
+      return;
+    }
     final pc = People.parse(text);
     if (pc != null && await _people(pc)) return;
     final r = Brain.handle(text, _apps);
@@ -331,6 +346,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
             preface: preface)) {
           _say('I couldn\'t find "${str('name')}" in your contacts.');
         }
+      case 'remember':
+        final f = memory.add(str('fact'));
+        _say(preface.isNotEmpty ? preface : 'Got it. I\'ll remember: $f');
+      case 'forget':
+        final gone = memory.forget(str('about'));
+        _say(gone == null ? 'I couldn\'t find that in what I remember.' : 'Forgotten: $gone');
       case 'recent_calls':
         if (preface.isNotEmpty) _say(preface);
         await _showCalls();
@@ -741,39 +762,58 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
   }
 
   // ---------- top bar: you + settings ----------
-  Widget _header(VC c) => Container(
-        padding: const EdgeInsets.fromLTRB(8, 6, 4, 6),
-        decoration: BoxDecoration(
-          color: c.chat,
-          border: Border(bottom: BorderSide(color: c.divider, width: 0.5)),
-        ),
-        child: Row(children: [
-          Expanded(
-            child: InkWell(
-              borderRadius: BorderRadius.circular(8),
-              onTap: () { prefs.tap(); showProfileSheet(context); },
-              // Hidden shortcut: long-press yourself for Vibe settings
-              onLongPress: () { prefs.heavy(); _openLauncherSettings(); },
-              child: Padding(
-                padding: const EdgeInsets.all(4),
-                child: Row(children: [
-                  Avatar(name: prefs.name, size: 40),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                      Text(prefs.name,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(color: c.text, fontWeight: FontWeight.w800, fontSize: 18)),
-                      Text('Online', style: TextStyle(color: c.muted, fontSize: 12)),
-                    ]),
+  /// Top bar like Vibe's chat screen: big round avatar, bold name, status line, no divider.
+  Widget _header(VC c) {
+    String status = 'Online';
+    for (final m in chat.msgs.reversed) {
+      if (m.media) {
+        if (m.text.startsWith('▶')) {
+          final song = RegExp(r'"(.+?)"').firstMatch(m.text)?.group(1);
+          if (song != null && DateTime.now().millisecondsSinceEpoch - m.ts < 60 * 60 * 1000) {
+            status = '🎵 Listening to $song';
+          }
+        }
+        break;
+      }
+    }
+    return SizedBox(
+      height: 64,
+      child: InkWell(
+        splashColor: Colors.transparent,
+        highlightColor: Colors.transparent,
+        onTap: () { prefs.tap(); showProfileSheet(context); },
+        // Hidden shortcut: long-press yourself for Vibe settings
+        onLongPress: () { prefs.heavy(); _openLauncherSettings(); },
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
+          child: Row(children: [
+            Pressable(child: Avatar(name: prefs.name, size: 40)),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(prefs.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(color: c.text, fontWeight: FontWeight.w700, fontSize: 19)),
+                  AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 250),
+                    child: Text(status,
+                        key: ValueKey(status),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: c.muted, fontSize: 13)),
                   ),
-                ]),
+                ],
               ),
             ),
-          ),
-        ]),
-      );
+          ]),
+        ),
+      ),
+    );
+  }
 
   Widget _notifBanner() => Container(
         margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
@@ -824,8 +864,17 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
         reverse: true,
         padding: const EdgeInsets.only(top: 12, bottom: 8),
         itemCount: n + (_thinking ? 1 : 0),
+        findChildIndexCallback: (key) {
+          if (key is! ValueKey<String>) return null;
+          for (var i = 0; i < n; i++) {
+            if (_idOf(msgs[n - 1 - i]) == key.value) return i + (_thinking ? 1 : 0);
+          }
+          return null;
+        },
         itemBuilder: (_, idx) {
-          if (_thinking && idx == 0) return _typingRow(c);
+          if (_thinking && idx == 0) {
+            return const Entrance(key: ValueKey('typing'), animate: true, child: _TypingRowHolder());
+          }
           final i = _thinking ? idx - 1 : idx;
           final m = msgs[n - 1 - i];
           final older = n - 2 - i >= 0 ? msgs[n - 2 - i] : null;
@@ -834,15 +883,24 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
           final newDay = ot == null || !sameDay(ot, t);
           final head =
               newDay || m.quote != null || older!.sender != m.sender || m.ts - older.ts > 5 * 60 * 1000;
-          return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          final id = _idOf(m);
+          final isNew = _known.add(id) && !_firstPaint;
+          Widget row = Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             if (newDay) _dayDivider(c, t),
             _message(c, m, t, head),
           ]);
+          row = isNew
+              ? Entrance(animate: true, fromRight: false, child: row)
+              : _firstPaint
+                  ? Stagger(index: i, child: row)
+                  : row;
+          return KeyedSubtree(key: ValueKey(id), child: row);
         },
       ),
     );
   }
 
+  // ignore: unused_element
   Widget _typingRow(VC c) => Padding(
         padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
         child: Row(children: [
@@ -940,7 +998,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
                   Flexible(
                     child: Text(name,
                         overflow: TextOverflow.ellipsis,
-                        style: TextStyle(color: c.text, fontWeight: FontWeight.w700, fontSize: 16)),
+                        style: TextStyle(
+                            color: m.me ? c.muted : c.text, fontWeight: FontWeight.w600, fontSize: 16)),
                   ),
                   if (!m.me && !m.isNotif) ...[
                     const SizedBox(width: 6),
@@ -1476,15 +1535,40 @@ class _AppDrawerState extends State<_AppDrawer> {
                 : ListView.builder(
                     padding: const EdgeInsets.only(bottom: 8),
                     itemCount: list.length,
-                    itemBuilder: (_, i) => AppRow(
-                      app: list[i],
-                      onTap: () => widget.onLaunch(list[i]),
-                      onLongPress: () => showAppMenu(context, list[i], () => widget.onLaunch(list[i])),
+                    itemBuilder: (_, i) => Stagger(
+                      index: i,
+                      dy: 12,
+                      child: Pressable(
+                        child: AppRow(
+                          app: list[i],
+                          onTap: () => widget.onLaunch(list[i]),
+                          onLongPress: () => showAppMenu(context, list[i], () => widget.onLaunch(list[i])),
+                        ),
+                      ),
                     ),
                   ),
           ),
         ]),
       ),
+    );
+  }
+}
+
+/// "Vibe is typing…" row with bouncing dots.
+class _TypingRowHolder extends StatelessWidget {
+  const _TypingRowHolder();
+  @override
+  Widget build(BuildContext context) {
+    final c = VC.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
+      child: Row(children: [
+        const BotAvatar(size: 24),
+        const SizedBox(width: 8),
+        const TypingDots(),
+        const SizedBox(width: 8),
+        Text('Vibe is typing…', style: TextStyle(color: c.muted, fontSize: 13, fontWeight: FontWeight.w600)),
+      ]),
     );
   }
 }

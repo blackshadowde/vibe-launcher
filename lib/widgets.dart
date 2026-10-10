@@ -111,7 +111,8 @@ class AppCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = VC.of(context);
-    return Container(
+    return Pressable(
+        child: Container(
       margin: const EdgeInsets.only(top: 6),
       constraints: const BoxConstraints(maxWidth: 320),
       decoration: BoxDecoration(
@@ -151,7 +152,7 @@ class AppCard extends StatelessWidget {
           ),
         ),
       ),
-    );
+    ));
   }
 }
 
@@ -475,3 +476,147 @@ Widget replyStrip(VC c, {required Widget avatar, required String name, required 
         ),
       ]),
     );
+
+/// Google-Messages style entrance for a brand-new message (same as Vibe): the row grows
+/// from the bottom so the timeline glides up, while the message rises, scales from its
+/// corner and fades in. Rows that don't animate are returned untouched.
+class Entrance extends StatefulWidget {
+  final bool animate;
+  final bool fromRight;
+  final Widget child;
+  const Entrance({super.key, required this.animate, this.fromRight = false, required this.child});
+
+  @override
+  State<Entrance> createState() => _EntranceState();
+}
+
+class _EntranceState extends State<Entrance> with SingleTickerProviderStateMixin {
+  AnimationController? _c;
+  Animation<double>? _size, _pop, _fade;
+
+  @override
+  void initState() {
+    super.initState();
+    if (!widget.animate) return;
+    final c = AnimationController(vsync: this, duration: const Duration(milliseconds: 460));
+    _c = c;
+    _size = CurvedAnimation(parent: c, curve: const Interval(0.0, 0.8, curve: Curves.easeOutCubic));
+    _pop = CurvedAnimation(parent: c, curve: Curves.easeOutBack);
+    _fade = CurvedAnimation(parent: c, curve: const Interval(0.0, 0.55, curve: Curves.easeOut));
+    c.addStatusListener((s) {
+      if (s == AnimationStatus.completed && mounted) setState(() {});
+    });
+    c.forward();
+  }
+
+  @override
+  void dispose() {
+    _c?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = _c;
+    if (c == null || c.isCompleted) return widget.child;
+    return AnimatedBuilder(
+      animation: c,
+      child: widget.child,
+      builder: (context, child) {
+        final p = _pop!.value;
+        return SizeTransition(
+          sizeFactor: _size!,
+          axisAlignment: 1.0,
+          child: Opacity(
+            opacity: _fade!.value.clamp(0.0, 1.0),
+            child: Transform.translate(
+              offset: Offset(0, (1 - p) * 38),
+              child: Transform.scale(
+                scale: 0.86 + 0.14 * p,
+                alignment: widget.fromRight ? Alignment.bottomRight : Alignment.bottomLeft,
+                child: child,
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// Fade + rise-in once, with a small per-index delay (used when the chat first opens).
+class Stagger extends StatefulWidget {
+  final int index;
+  final int maxIndex;
+  final double dy;
+  final Widget child;
+  const Stagger({super.key, required this.index, required this.child, this.maxIndex = 12, this.dy = 18});
+
+  @override
+  State<Stagger> createState() => _StaggerState();
+}
+
+class _StaggerState extends State<Stagger> with SingleTickerProviderStateMixin {
+  late final bool _play = widget.index <= widget.maxIndex;
+  late final AnimationController _c = AnimationController(
+      vsync: this, duration: const Duration(milliseconds: 460), value: _play ? 0 : 1);
+  late final Animation<double> _curve = CurvedAnimation(parent: _c, curve: Curves.easeOutCubic);
+
+  @override
+  void initState() {
+    super.initState();
+    if (_play) {
+      Future<void>.delayed(Duration(milliseconds: 32 * widget.index), () {
+        if (mounted) _c.forward();
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AnimatedBuilder(
+        animation: _curve,
+        child: widget.child,
+        builder: (context, child) => _c.isCompleted
+            ? child!
+            : Opacity(
+                opacity: _curve.value.clamp(0.0, 1.0),
+                child: Transform.translate(offset: Offset(0, (1 - _curve.value) * widget.dy), child: child),
+              ),
+      );
+}
+
+/// Shrinks a little under your finger and springs back (taps and long-presses still work).
+class Pressable extends StatefulWidget {
+  final Widget child;
+  final double scale;
+  const Pressable({super.key, required this.child, this.scale = 0.96});
+
+  @override
+  State<Pressable> createState() => _PressableState();
+}
+
+class _PressableState extends State<Pressable> {
+  bool _down = false;
+  void _set(bool v) {
+    if (_down != v && mounted) setState(() => _down = v);
+  }
+
+  @override
+  Widget build(BuildContext context) => Listener(
+        onPointerDown: (_) => _set(true),
+        onPointerUp: (_) => _set(false),
+        onPointerCancel: (_) => _set(false),
+        child: AnimatedScale(
+          scale: _down ? widget.scale : 1,
+          duration: Duration(milliseconds: _down ? 90 : 320),
+          curve: _down ? Curves.easeOut : Curves.easeOutBack,
+          child: widget.child,
+        ),
+      );
+}

@@ -2,6 +2,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'chat.dart';
 import 'launcher.dart';
+import 'memory.dart';
 import 'theme.dart';
 
 /// One phone number of a contact.
@@ -91,6 +92,14 @@ class People {
         }
         if (w != q) s = s > 0 ? s - 2 : 0; // alias match ranks just below the exact word
         if (s > best) best = s;
+      }
+      // Memory: "my brother is Ravi" makes "call my brother" find Ravi
+      if (best < 90) {
+        final first = n.split(' ').first;
+        for (final f in memory.namesFor(q)) {
+          final fw = f.split(' ');
+          if (first.length >= 3 && fw.contains(first)) best = 92;
+        }
       }
       if (best == 0 && q.length >= 4) {
         final first = n.split(' ').first;

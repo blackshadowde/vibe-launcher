@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'home.dart';
 import 'launcher.dart';
+import 'memory.dart';
 import 'theme.dart';
 
 final navKey = GlobalKey<NavigatorState>();
@@ -9,6 +10,7 @@ final navKey = GlobalKey<NavigatorState>();
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await prefs.load();
+  memory.load();
   Native.init();
   SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
   runApp(const VibeLauncher());
