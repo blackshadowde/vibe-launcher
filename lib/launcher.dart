@@ -8,7 +8,7 @@ import 'theme.dart';
 
 /// One installed app. In the UI it's a "user" in the DM list.
 /// Shown in settings and when you ask "what version is this".
-const vibeVersion = '0.21.0';
+const vibeVersion = '0.22.0';
 
 class AppEntry {
   final String label, pkg;
@@ -81,6 +81,8 @@ class Native {
 
   // Pictures
   static Future<String?> saveToGallery(String path) => _c.invokeMethod<String>('saveToGallery', {'path': path});
+  static Future<String?> saveDownload(String path, String name, String mime) =>
+      _c.invokeMethod<String>('saveDownload', {'path': path, 'name': name, 'mime': mime});
   static Future<void> shareImage(String uri) => _c.invokeMethod('shareImage', {'uri': uri});
   static Future<bool> setWallpaper(String path, {bool lockOnly = false}) async =>
       await _c.invokeMethod<bool>('setWallpaper', {'path': path, 'lock': lockOnly}) ?? false;

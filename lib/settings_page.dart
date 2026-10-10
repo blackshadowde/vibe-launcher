@@ -25,7 +25,7 @@ class SettingsPage extends StatelessWidget {
     (Icons.apps_rounded, 'Apps', 'Sorting & hidden apps', {'APPS'}),
     (Icons.notifications_rounded, 'Notifications', 'Notifications in chat, music & muted apps', {'NOTIFICATIONS'}),
     (Icons.contacts_rounded, 'People', 'Contacts, calls, SMS & default messenger', {'PEOPLE'}),
-    (Icons.send_rounded, 'Telegram', 'Your Telegram chats inside Vibe', {'TELEGRAM'}),
+    (Icons.send_rounded, 'Telegram', 'Channels, download bots & downloads', {'TELEGRAM'}),
     (Icons.manage_search_rounded, 'Search & mail', 'Global search, SMS & files access, Gmail', {'SEARCH'}),
     (Icons.wb_sunny_rounded, 'Daily brief', 'Brief time, city for weather & calendar', {'DAILY BRIEF'}),
     (Icons.auto_awesome_rounded, 'Vibe AI', 'On-phone AI, Gemini, Groq, Cloudflare, backup AI & pictures', {'ON-PHONE AI', 'MAIN AI', 'VIBE AI (GEMINI)', 'GROQ', 'PICTURES'}),
@@ -558,8 +558,8 @@ class SettingsPage extends StatelessWidget {
                       style: TextStyle(color: c.text)),
                   subtitle: Text(
                       tg.ready
-                          ? 'Messages arrive in your timeline; swipe to reply'
-                          : 'Log in to read and send Telegram messages in Vibe',
+                          ? 'Join channels, use download bots, save files to Download/Vibe Telegram'
+                          : 'Log in to join channels and download files in Vibe',
                       style: TextStyle(color: c.faint)),
                   trailing: Icon(Icons.chevron_right_rounded, color: c.faint),
                   onTap: () => Navigator.of(context).push(MaterialPageRoute(
@@ -568,7 +568,7 @@ class SettingsPage extends StatelessWidget {
                 if (tg.ready)
                   ListTile(
                     leading: Icon(Icons.forum_rounded, color: c.muted),
-                    title: Text('Open chats', style: TextStyle(color: c.text)),
+                    title: Text('Channels, bots & downloads', style: TextStyle(color: c.text)),
                     onTap: () => Navigator.of(context)
                         .push(MaterialPageRoute(builder: (_) => const TelegramChatsPage())),
                   ),

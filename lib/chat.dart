@@ -187,6 +187,7 @@ class Brain {
       '• Long-press my avatar for your recent apps\n'
       '• "dark mode", "light mode", "follow system", "check my AI keys", "is the offline AI downloaded?", "download offline model"\n'
       '• "accent green", "round icons on", "haptics off", "dim the wallpaper", "list my icon packs", "sort apps A to Z", "hide Facebook", "show hidden apps", "mute Instagram", "music updates off", "brief at 7:30", "messages use WhatsApp", "list Groq models", "back up now", "what version is this"\n'
+      '• Telegram: paste a t.me link to join or start a bot, "join @channel", "search telegram for …", "telegram downloads"\n'
       '• Paste an API key ("my Groq key is gsk_…"): I hide it and save it encrypted after you tap Save\n'
       '• Swipe right on any of my answers to continue that same conversation later\n'
       'Notifications show up here: tap Reply to answer, long-press to mute an app.\n'

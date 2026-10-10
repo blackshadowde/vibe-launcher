@@ -5,8 +5,8 @@ import 'package:flutter/foundation.dart';
 import 'package:handy_tdlib_next/handy_tdlib_next.dart' show TdPlugin;
 import 'launcher.dart';
 
-/// A full Telegram account inside Vibe, using Telegram's own library (TDLib).
-/// Your API ID / hash come from my.telegram.org and stay encrypted on this phone.
+/// Telegram inside Vibe (TDLib): join channels, use download bots, and save their files.
+/// Personal chats stay in the Telegram app. Your API ID / hash stay encrypted on this phone.
 class Telegram extends ChangeNotifier {
   Telegram._();
   static final Telegram i = Telegram._();
@@ -37,6 +37,14 @@ class Telegram extends ChangeNotifier {
 
   final chats = <int, Map>{};
   final users = <int, Map>{};
+  final supergroups = <int, Map>{};
+
+  /// File downloads by TDLib file id: name, mime, size, done, state (downloading / saving / done / failed / paused), uri.
+  final downloads = <int, Map>{};
+
+  /// A download finished and was saved to Download/Vibe Telegram.
+  void Function(Map item)? onDownloaded;
+  int _lastTick = 0;
   int? openChatId; // chat open on screen right now (its messages don't pile up in the timeline)
 
   /// New incoming message for the home timeline.
@@ -150,6 +158,22 @@ class Telegram extends ChangeNotifier {
         notifyListeners();
       case 'updateChatNotificationSettings':
         chats[_int(u['chat_id'])]?['notification_settings'] = u['notification_settings'];
+      case 'updateSupergroup':
+        final sg = u['supergroup'] as Map;
+        supergroups[_int(sg['id'])] = sg;
+        notifyListeners();
+      case 'updateFile':
+        _onFile(u['file'] as Map);
+      case 'updateMessageContent':
+      case 'updateMessageEdited':
+        // Bots often edit their message (new buttons, a file appears): reload it for the open screen
+        final chatId = _int(u['chat_id']);
+        final l = _chatListeners[chatId];
+        if (l != null) {
+          call({'@type': 'getMessage', 'chat_id': chatId, 'message_id': u['message_id']}).then((m) {
+            if (!isError(m)) l(m);
+          });
+        }
       case 'updateNewMessage':
         _onNewMessage(u['message'] as Map);
       case 'updateMessageSendSucceeded':
@@ -167,9 +191,8 @@ class Telegram extends ChangeNotifier {
     }
     _chatListeners[chatId]?.call(m);
     if (m['is_outgoing'] == true || openChatId == chatId) return;
-    if (c != null && isChannel(c)) return; // channels are news feeds, not chats
-    final muted = ((c?['notification_settings'] as Map?)?['mute_for'] as num? ?? 0) > 0;
-    if (muted) return;
+    // Only download bots talk in the timeline; channels and personal chats stay quiet
+    if (c == null || !isBot(c)) return;
     onIncoming?.call(m);
   }
 
@@ -248,7 +271,235 @@ class Telegram extends ChangeNotifier {
   Future<void> _afterLogin() async {
     final me = await call({'@type': 'getMe'});
     if (!isError(me)) myId = _int(me['id']);
+    _loadDone();
     await loadChats();
+  }
+
+  // ---------------- downloads ----------------
+  void _loadDone() {
+    try {
+      final raw = prefs.sp.getString('tgDownloads');
+      if (raw == null) return;
+      for (final e in (jsonDecode(raw) as List)) {
+        final m = Map.of(e as Map);
+        downloads.putIfAbsent(_int(m['id']), () => m);
+      }
+    } catch (_) {}
+  }
+
+  void _saveDone() {
+    final done = downloads.values.where((d) => d['state'] == 'done').toList()
+      ..sort((a, b) => _int(b['ts']).compareTo(_int(a['ts'])));
+    prefs.sp.setString('tgDownloads', jsonEncode(done.take(150).toList()));
+  }
+
+  /// Finished and in-progress downloads, newest first.
+  List<Map> downloadList() {
+    final l = downloads.values.toList()..sort((a, b) => _int(b['ts']).compareTo(_int(a['ts'])));
+    return l;
+  }
+
+  Future<void> download(TgFile f, {String from = ''}) async {
+    final d = downloads[f.id];
+    if (d != null && (d['state'] == 'downloading' || d['state'] == 'saving' || d['state'] == 'done')) return;
+    downloads[f.id] = {
+      'id': f.id,
+      'name': f.name,
+      'mime': f.mime,
+      'size': f.size,
+      'done': 0,
+      'state': 'downloading',
+      'from': from,
+      'ts': DateTime.now().millisecondsSinceEpoch,
+    };
+    notifyListeners();
+    final r = await call({'@type': 'downloadFile', 'file_id': f.id, 'priority': 16, 'offset': 0, 'limit': 0, 'synchronous': false});
+    if (isError(r)) {
+      downloads[f.id]!['state'] = 'failed';
+      notifyListeners();
+    } else {
+      _onFile(r);
+    }
+  }
+
+  Future<void> cancel(int fileId) async {
+    await call({'@type': 'cancelDownloadFile', 'file_id': fileId, 'only_if_pending': false});
+    downloads.remove(fileId);
+    notifyListeners();
+  }
+
+  void _onFile(Map f) {
+    final id = _int(f['id']);
+    final d = downloads[id];
+    if (d == null || d['state'] == 'done' || d['state'] == 'saving') return;
+    final local = f['local'] as Map? ?? const {};
+    final size = _int(f['size']) > 0 ? _int(f['size']) : _int(f['expected_size']);
+    if (size > 0) d['size'] = size;
+    d['done'] = _int(local['downloaded_size']);
+    if (local['is_downloading_completed'] == true) {
+      _finish(id, '${local['path']}');
+      return;
+    }
+    if (local['is_downloading_active'] != true && d['state'] == 'downloading' && _int(local['downloaded_size']) > 0) {
+      d['state'] = 'paused';
+    }
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (now - _lastTick > 400) {
+      _lastTick = now;
+      notifyListeners();
+    }
+  }
+
+  Future<void> _finish(int id, String path) async {
+    final d = downloads[id]!;
+    d['state'] = 'saving';
+    notifyListeners();
+    final uri = await Native.saveDownload(path, '${d['name']}', '${d['mime']}');
+    if (uri == null) {
+      d['state'] = 'failed';
+    } else {
+      d['state'] = 'done';
+      d['uri'] = uri;
+      d['ts'] = DateTime.now().millisecondsSinceEpoch;
+      // Free Telegram's own copy; the saved file is in Download/Vibe Telegram
+      call({'@type': 'deleteFile', 'file_id': id});
+      _saveDone();
+      onDownloaded?.call(d);
+    }
+    notifyListeners();
+  }
+
+  // ---------------- channels, bots, links ----------------
+  /// Is this chat a bot (a private chat with a bot account)?
+  bool isBot(Map chat) {
+    final t = chat['type'] as Map?;
+    if (t?['@type'] != 'chatTypePrivate') return false;
+    final u = users[_int(t?['user_id'])];
+    return (u?['type'] as Map?)?['@type'] == 'userTypeBot';
+  }
+
+  int? botUserId(Map chat) => isBot(chat) ? _int((chat['type'] as Map)['user_id']) : null;
+
+  /// For channels / groups: are you a member?
+  bool isMember(Map chat) {
+    final t = chat['type'] as Map?;
+    if (t?['@type'] != 'chatTypeSupergroup') return true;
+    final sg = supergroups[_int(t?['supergroup_id'])];
+    final st = (sg?['status'] as Map?)?['@type']?.toString() ?? '';
+    return st.isNotEmpty && st != 'chatMemberStatusLeft' && st != 'chatMemberStatusBanned';
+  }
+
+  Future<String?> join(int chatId) async {
+    final r = await call({'@type': 'joinChat', 'chat_id': chatId});
+    return isError(r) ? _nice(r) : null;
+  }
+
+  Future<String?> leave(int chatId) async {
+    final r = await call({'@type': 'leaveChat', 'chat_id': chatId});
+    return isError(r) ? _nice(r) : null;
+  }
+
+  Future<Map> startBot(int chatId, {String param = ''}) {
+    final c = chats[chatId];
+    final bot = c == null ? null : botUserId(c);
+    if (bot == null) return sendText(chatId, '/start');
+    return call({'@type': 'sendBotStartMessage', 'bot_user_id': bot, 'chat_id': chatId, 'parameter': param});
+  }
+
+  /// Presses an inline button under a bot's message. Returns the bot's short answer, if any.
+  Future<String?> pressButton(Map msg, Map button) async {
+    final t = button['type'] as Map? ?? const {};
+    switch (t['@type']) {
+      case 'inlineKeyboardButtonTypeCallback':
+        final r = await call({
+          '@type': 'getCallbackQueryAnswer',
+          'chat_id': msg['chat_id'],
+          'message_id': msg['id'],
+          'payload': {'@type': 'callbackQueryPayloadData', 'data': t['data']},
+        }, timeout: const Duration(seconds: 20));
+        if (isError(r)) return (r['message'] ?? '').toString().contains('timeout') ? null : _nice(r);
+        final text = (r['text'] ?? '').toString();
+        final url = (r['url'] ?? '').toString();
+        if (url.isNotEmpty) Native.openUrl(url);
+        return text.isEmpty ? null : text;
+      case 'inlineKeyboardButtonTypeUrl':
+      case 'inlineKeyboardButtonTypeLoginUrl':
+        final url = (t['url'] ?? '').toString();
+        if (url.isNotEmpty) Native.openUrl(url);
+        return null;
+      default:
+        return 'This button only works in the Telegram app.';
+    }
+  }
+
+  /// Public channels and bots matching [q].
+  Future<List<Map>> searchPublic(String q) async {
+    final out = <Map>[];
+    final r = await call({'@type': 'searchPublicChats', 'query': q.trim()});
+    for (final id in (r['chat_ids'] as List? ?? [])) {
+      final cid = _int(id);
+      final c = chats[cid] ?? await call({'@type': 'getChat', 'chat_id': cid});
+      if (!isError(c)) {
+        chats[cid] = Map.of(c);
+        out.add(chats[cid]!);
+      }
+    }
+    return out;
+  }
+
+  /// What a t.me link points to: {'kind': chat / invite / post, ...}. Null if it isn't a Telegram link.
+  static RegExpMatch? linkIn(String text) => RegExp(
+          r'(?:https?://)?(?:t\.me|telegram\.me|telegram\.dog)/(\+[\w-]+|joinchat/[\w-]+|[A-Za-z][\w]{3,})(?:/(\d+))?(?:\?start=([\w-]+))?',
+          caseSensitive: false)
+      .firstMatch(text);
+
+  Future<Map?> resolveLink(RegExpMatch m) async {
+    final part = m.group(1)!;
+    final full = m.group(0)!.startsWith('http') ? m.group(0)! : 'https://${m.group(0)!}';
+    if (part.startsWith('+') || part.toLowerCase().startsWith('joinchat/')) {
+      final info = await call({'@type': 'checkChatInviteLink', 'invite_link': full});
+      if (isError(info)) return {'kind': 'error', 'error': _nice(info)};
+      return {'kind': 'invite', 'link': full, 'info': info};
+    }
+    if (m.group(2) != null) {
+      final info = await call({'@type': 'getMessageLinkInfo', 'url': full});
+      if (!isError(info) && info['message'] is Map) {
+        final msg = info['message'] as Map;
+        final c = chats[chatOf(msg)] ?? await call({'@type': 'getChat', 'chat_id': msg['chat_id']});
+        if (!isError(c)) chats[_int(c['id'])] = Map.of(c);
+        return {'kind': 'post', 'message': msg, 'chat': c};
+      }
+    }
+    final c = await call({'@type': 'searchPublicChat', 'username': part});
+    if (isError(c)) return {'kind': 'error', 'error': 'I couldn\'t find @$part on Telegram.'};
+    chats[_int(c['id'])] = Map.of(c);
+    return {'kind': 'chat', 'chat': c, 'start': m.group(3) ?? ''};
+  }
+
+  Future<String?> joinInvite(String link) async {
+    final r = await call({'@type': 'joinChatByInviteLink', 'invite_link': link});
+    return isError(r) ? _nice(r) : null;
+  }
+
+  /// Messages with files in a chat, optionally matching [query]. kind: all / video / audio / document / photo
+  Future<List<Map>> searchFiles(int chatId, String query, {String kind = 'all', int fromId = 0}) async {
+    final filter = switch (kind) {
+      'video' => 'searchMessagesFilterVideo',
+      'audio' => 'searchMessagesFilterAudio',
+      'document' => 'searchMessagesFilterDocument',
+      'photo' => 'searchMessagesFilterPhoto',
+      _ => 'searchMessagesFilterEmpty',
+    };
+    final r = await call({
+      '@type': 'searchChatMessages',
+      'chat_id': chatId,
+      'query': query,
+      'from_message_id': fromId,
+      'offset': 0,
+      'limit': 50,
+      'filter': {'@type': filter},
+    });
+    return List<Map>.from(r['messages'] as List? ?? const []);
   }
 
   // ---------------- login steps ----------------
@@ -301,9 +552,13 @@ class Telegram extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Chats newest first (channels last).
-  List<Map> sortedChats() {
-    final l = chats.values.toList();
+  /// Channels / bots (kind: 'channel' or 'bot'), newest first.
+  List<Map> sortedChats({String kind = 'all'}) {
+    final l = chats.values.where((c) {
+      if (kind == 'channel') return isChannel(c) || (c['type'] as Map?)?['@type'] == 'chatTypeSupergroup';
+      if (kind == 'bot') return isBot(c);
+      return isChannel(c) || isBot(c);
+    }).toList();
     int date(Map c) => _int((c['last_message'] as Map?)?['date']);
     l.sort((a, b) => date(b).compareTo(date(a)));
     return l;
@@ -474,5 +729,63 @@ class Telegram extends ChangeNotifier {
       default:
         return 'Message';
     }
+  }
+}
+
+
+/// A downloadable file inside a Telegram message.
+class TgFile {
+  final int id, size;
+  final String name, mime, kind; // kind: video / audio / document / photo / voice
+  const TgFile(this.id, this.name, this.mime, this.size, this.kind);
+
+  Map toCard() => {'type': 'tgfile', 'file': id, 'name': name, 'mime': mime, 'size': size, 'kind': kind};
+  static TgFile fromCard(Map c) => TgFile((c['file'] as num).toInt(), '${c['name']}', '${c['mime']}',
+      (c['size'] as num?)?.toInt() ?? 0, '${c['kind']}');
+
+  static TgFile? of(Map msg) {
+    final c = msg['content'] as Map? ?? const {};
+    final mid = msg['id'];
+    TgFile? make(Map? f, String? name, String? mime, String kind, String fallback) {
+      if (f == null) return null;
+      final size = ((f['size'] as num?) ?? 0) > 0 ? (f['size'] as num).toInt() : ((f['expected_size'] as num?) ?? 0).toInt();
+      final n = (name == null || name.trim().isEmpty) ? fallback : name.trim();
+      return TgFile((f['id'] as num).toInt(), n, (mime == null || mime.isEmpty) ? 'application/octet-stream' : mime, size, kind);
+    }
+
+    switch (c['@type']) {
+      case 'messageDocument':
+        final d = c['document'] as Map;
+        return make(d['document'] as Map?, d['file_name'], d['mime_type'], 'document', 'file_$mid');
+      case 'messageVideo':
+        final v = c['video'] as Map;
+        return make(v['video'] as Map?, v['file_name'], v['mime_type'] ?? 'video/mp4', 'video', 'video_$mid.mp4');
+      case 'messageAnimation':
+        final v = c['animation'] as Map;
+        return make(v['animation'] as Map?, v['file_name'], v['mime_type'] ?? 'video/mp4', 'video', 'gif_$mid.mp4');
+      case 'messageAudio':
+        final a = c['audio'] as Map;
+        final guess = [a['performer'], a['title']].where((x) => x != null && '$x'.isNotEmpty).join(' - ');
+        return make(a['audio'] as Map?, a['file_name'] ?? (guess.isEmpty ? null : '$guess.mp3'), a['mime_type'] ?? 'audio/mpeg',
+            'audio', 'audio_$mid.mp3');
+      case 'messageVoiceNote':
+        final v = c['voice_note'] as Map;
+        return make(v['voice'] as Map?, null, v['mime_type'] ?? 'audio/ogg', 'voice', 'voice_$mid.ogg');
+      case 'messageVideoNote':
+        final v = c['video_note'] as Map;
+        return make(v['video'] as Map?, null, 'video/mp4', 'video', 'video_note_$mid.mp4');
+      case 'messagePhoto':
+        final sizes = ((c['photo'] as Map?)?['sizes'] as List?) ?? const [];
+        if (sizes.isEmpty) return null;
+        return make((sizes.last as Map)['photo'] as Map?, null, 'image/jpeg', 'photo', 'photo_$mid.jpg');
+    }
+    return null;
+  }
+
+  static String human(int b) {
+    if (b <= 0) return '';
+    if (b >= 1 << 30) return '${(b / (1 << 30)).toStringAsFixed(2)} GB';
+    if (b >= 1 << 20) return '${(b / (1 << 20)).toStringAsFixed(1)} MB';
+    return '${(b / 1024).toStringAsFixed(0)} KB';
   }
 }

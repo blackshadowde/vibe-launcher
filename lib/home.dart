@@ -66,6 +66,19 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     Native.onFired = _onFired;
     appErrors.addListener(_onAppError);
     Telegram.i.onIncoming = _onTelegram;
+    Telegram.i.onDownloaded = (d) {
+      if (!mounted) return;
+      _say('⬇️ Downloaded **${d['name']}** to Download/Vibe Telegram.', card: {
+        'type': 'ask',
+        'state': 'ask',
+        'uri': d['uri'],
+        'mime': d['mime'],
+        'buttons': [
+          {'label': 'Open', 'do': 'tgfileopen', 'primary': true},
+          {'label': 'All downloads', 'do': 'tgdownloads'},
+        ],
+      });
+    };
     if (Telegram.i.configured) Telegram.i.start();
     Native.lastCrash().then((t) {
       if (t == null || t.trim().isEmpty || !mounted) return;
@@ -956,6 +969,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
             actionPill('${b['label']}', done ? null : () => _onAsk(m, '${b['do']}'), primary: b['primary'] == true),
           ]),
         ]);
+      case 'tgfile':
+        return TgFileTile(file: TgFile.fromCard(card), from: '${card['from'] ?? ''}');
       case 'models':
         final picked = card['picked']?.toString();
         return Container(
@@ -2044,19 +2059,29 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     final title = chatRow == null || Telegram.isPrivate(chatRow) ? sender : '$sender · ${tg.chatTitle(chatId)}';
     final pkg = Telegram.appPackages.firstWhere((p) => _byPkg(p) != null, orElse: () => 'org.telegram.messenger');
     final atBottom = !_scroll.hasClients || _scroll.offset < 80;
-    chat.add(Msg(false, Telegram.textOf(tm),
+    final file = TgFile.of(tm);
+    final caption = file == null ? Telegram.textOf(tm) : (((tm['content'] as Map?)?['caption'] as Map?)?['text'] ?? '').toString();
+    final hasButtons = (tm['reply_markup'] as Map?)?['@type'] == 'replyMarkupInlineKeyboard';
+    chat.add(Msg(false, caption.isEmpty && file == null ? Telegram.textOf(tm) : caption,
         ts: (((tm['date'] as num?) ?? 0).toInt() * 1000),
         pkg: pkg,
         app: 'Telegram',
         title: title,
         nkey: 'tg:$chatId:${Telegram.idOf(tm)}',
-        canReply: true));
+        canReply: true,
+        card: file != null
+            ? (file.toCard()..['from'] = tg.chatTitle(chatId))
+            : hasButtons
+                ? {'type': 'ask', 'state': 'ask', 'chat': chatId, 'buttons': [
+                    {'label': 'Open to choose', 'do': 'tgopen', 'primary': true}
+                  ]}
+                : null));
     if (atBottom) _toBottom();
   }
 
-  void _openTelegramChat(int chatId) {
+  void _openTelegramChat(int chatId, {String start = ''}) {
     _focus.unfocus();
-    navKey.currentState?.push(MaterialPageRoute(builder: (_) => TelegramChatPage(chatId: chatId)));
+    navKey.currentState?.push(MaterialPageRoute(builder: (_) => TelegramChatPage(chatId: chatId, startParam: start)));
   }
 
   Future<void> _openTelegramLogin() async {
@@ -2065,14 +2090,149 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     if (ok == true) _say('✅ Telegram connected. Your chats now arrive here, and you can reply by swiping.');
   }
 
-  void _openTelegramChats() {
+  void _openTelegramChats({int tab = 0}) {
     _focus.unfocus();
-    navKey.currentState?.push(MaterialPageRoute(builder: (_) => const TelegramChatsPage()));
+    navKey.currentState?.push(MaterialPageRoute(builder: (_) => TelegramChatsPage(tab: tab)));
+  }
+
+  Future<void> _tgJoinFromCard(Msg m) async {
+    final card = m.card!;
+    _setCard(m, Map.from(card)..['state'] = 'joined');
+    final err = card['invite'] != null
+        ? await Telegram.i.joinInvite('${card['invite']}')
+        : await Telegram.i.join((card['chat'] as num).toInt());
+    if (err != null) {
+      _setCard(m, Map.from(card)..['state'] = 'ask');
+      _say('Couldn\'t join: $err', error: true);
+      return;
+    }
+    _say('✅ Joined **${card['to']}**. Say "telegram downloads" anytime, or open it to browse files.', card: {
+      'type': 'ask',
+      'state': 'ask',
+      'chat': card['chat'],
+      'buttons': [
+        {'label': 'Open channel', 'do': 'tgopen', 'primary': true},
+      ],
+    });
+  }
+
+  void _tgChatCard(Map c, {String start = ''}) {
+    final id = Telegram.idOf(c);
+    if (Telegram.i.isBot(c)) {
+      _say('🤖 **${c['title']}** is a bot.', card: {
+        'type': 'ask',
+        'state': 'ask',
+        'chat': id,
+        'start': start,
+        'buttons': [
+          {'label': 'Start bot', 'do': 'tgstart', 'primary': true},
+        ],
+      });
+      return;
+    }
+    final member = Telegram.i.isMember(c);
+    _say('📢 **${c['title']}**', card: {
+      'type': 'ask',
+      'state': 'ask',
+      'to': c['title'],
+      'chat': id,
+      'buttons': [
+        if (!member) {'label': 'Join', 'do': 'tgjoin', 'primary': true},
+        {'label': member ? 'Open' : 'Preview', 'do': 'tgopen', 'primary': member},
+      ],
+    });
+  }
+
+  /// A t.me link (or @name) pasted into Vibe: show what it is, with Join / Start / Download.
+  Future<bool> _telegramLink(String text) async {
+    final link = Telegram.linkIn(text);
+    if (link == null) return false;
+    if (!Telegram.i.ready) {
+      if (!Telegram.i.configured) return false;
+      _say('Telegram is still connecting. Try the link again in a moment.', error: true);
+      return true;
+    }
+    setState(() => _thinking = true);
+    Map? r;
+    try {
+      r = await Telegram.i.resolveLink(link);
+    } finally {
+      if (mounted) setState(() => _thinking = false);
+    }
+    if (r == null || r['kind'] == 'error') {
+      _say('${r?['error'] ?? 'That Telegram link didn\'t work.'}', error: true);
+      return true;
+    }
+    switch (r['kind']) {
+      case 'invite':
+        final info = r['info'] as Map;
+        final cid = (info['chat_id'] as num?)?.toInt() ?? 0;
+        final members = (info['member_count'] as num?)?.toInt() ?? 0;
+        _say('**${info['title']}**${members > 0 ? ' · $members members' : ''}', card: {
+          'type': 'ask',
+          'state': 'ask',
+          'to': info['title'],
+          'chat': cid,
+          if (cid == 0) 'invite': r['link'],
+          'preview': '${info['description'] ?? ''}'.trim().isEmpty ? 'Private channel or group' : '${info['description']}',
+          'buttons': [
+            if (cid == 0) {'label': 'Join', 'do': 'tgjoin', 'primary': true} else {'label': 'Open', 'do': 'tgopen', 'primary': true},
+          ],
+        });
+      case 'post':
+        final msg = r['message'] as Map;
+        final file = TgFile.of(msg);
+        final from = Telegram.i.chatTitle(Telegram.chatOf(msg));
+        _say(file == null ? 'Post from **$from**:\n${Telegram.textOf(msg)}' : 'File from **$from**:',
+            card: file == null
+                ? {'type': 'ask', 'state': 'ask', 'chat': Telegram.chatOf(msg), 'buttons': [
+                    {'label': 'Open channel', 'do': 'tgopen', 'primary': true}
+                  ]}
+                : (file.toCard()..['from'] = from));
+      case 'chat':
+        _tgChatCard(r['chat'] as Map, start: '${r['start'] ?? ''}');
+    }
+    return true;
   }
 
   /// "telegram chats", "connect telegram", "telegram Ravi I'm late", "message Ravi on telegram hi"
   Future<bool> _telegramCommands(String text) async {
+    if (Telegram.linkIn(text) != null && await _telegramLink(text)) return true;
     final low = Brain.norm(text);
+    if (Telegram.i.configured) {
+      if (RegExp(r'^(my |show |open )*(telegram )?downloads?$|^telegram (files|downloads)$').hasMatch(low) && low.contains('download') ||
+          low == 'telegram downloads' || low == 'telegram files') {
+        _openTelegramChats(tab: 2);
+        return true;
+      }
+      if (RegExp(r'^(my |show |open )*(telegram )?bots$').hasMatch(low)) {
+        _openTelegramChats(tab: 1);
+        return true;
+      }
+      if (RegExp(r'^(my |show |open )*(telegram )?channels$').hasMatch(low)) {
+        _openTelegramChats(tab: 0);
+        return true;
+      }
+      final join = RegExp(r'^join\s+@?([A-Za-z][\w]{3,})(?:\s+(?:on\s+)?telegram)?$', caseSensitive: false).firstMatch(text.trim());
+      if (join != null) return _telegramLink('t.me/${join.group(1)}');
+      final find = RegExp(r'^(?:search|find)\s+(?:telegram|tg)\s+(?:for\s+)?(.+)$|^(?:search|find)\s+(.+?)\s+on\s+telegram$',
+              caseSensitive: false)
+          .firstMatch(text.trim());
+      if (find != null && Telegram.i.ready) {
+        final q = (find.group(1) ?? find.group(2) ?? '').trim();
+        setState(() => _thinking = true);
+        final found = await Telegram.i.searchPublic(q);
+        if (mounted) setState(() => _thinking = false);
+        if (found.isEmpty) {
+          _say('Nothing on Telegram called "$q".');
+        } else {
+          for (final c in found.take(4)) {
+            _tgChatCard(c);
+          }
+        }
+        return true;
+      }
+    }
     if (!low.contains('telegram') && !low.startsWith('tg ')) return false;
     if (RegExp(r'^(connect|log ?in to|login to|sign in to|set ?up|add) telegram$|^telegram (login|log in|connect|setup|set up)$').hasMatch(low)) {
       await _openTelegramLogin();
@@ -2433,9 +2593,20 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
         _showModels();
       case 'cancel':
         _say('Okay. Ask me "download offline model" anytime.');
+      case 'tgfileopen':
+        _setCard(m, Map.from(m.card!)..['state'] = 'ask');
+        Native.openFile('${m.card!['uri']}', '${m.card!['mime']}');
+      case 'tgdownloads':
+        _setCard(m, Map.from(m.card!)..['state'] = 'ask');
+        _openTelegramChats(tab: 2);
+      case 'tgjoin':
+        _tgJoinFromCard(m);
+      case 'tgstart':
+        _openTelegramChat((m.card!['chat'] as num).toInt(), start: '${m.card!['start'] ?? ''}');
       case 'tgsend':
         _tgSendFromCard(m);
       case 'tgopen':
+        _setCard(m, Map.from(m.card!)..['state'] = 'ask');
         _openTelegramChat((m.card!['chat'] as num).toInt());
       case 'tglogin':
         _openTelegramLogin();
@@ -3882,8 +4053,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     final pkg = n['pkg']?.toString();
     if (pkg == null || !prefs.showNotifs || prefs.muted.contains(pkg)) return;
     if (n['type'] == 'media') return _onMedia(n, pkg);
-    // Logged in to Telegram here: its messages come straight from Telegram, not as app notifications
-    if (Telegram.i.ready && Telegram.appPackages.contains(pkg)) return;
+    // Bots you use in Vibe already talk here directly; skip the Telegram app's copy of their messages
+    if (Telegram.i.ready && Telegram.appPackages.contains(pkg)) {
+      final t = (n['title'] ?? '').toString();
+      if (Telegram.i.chats.values.any((c) => Telegram.i.isBot(c) && '${c['title']}' == t)) return;
+    }
     final atBottom = !_scroll.hasClients || _scroll.offset < 80;
     chat.add(Msg(false, (n['text'] ?? '').toString(),
         ts: (n['time'] as num?)?.toInt(),
