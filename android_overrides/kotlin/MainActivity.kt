@@ -59,6 +59,11 @@ class MainActivity : FlutterActivity() {
     private var channel: MethodChannel? = null
     private var listenResult: MethodChannel.Result? = null
     private var pendingShare: Map<String, Any>? = null
+    private var docResult: MethodChannel.Result? = null
+    private var docText: String? = null
+    private val saveCode = 4731
+    private val openCode = 4732
+    private val packMaps = HashMap<String, Map<String, String>>()
 
     // ---------- On-phone AI: Gemini Nano through Android's AICore ----------
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -93,7 +98,8 @@ class MainActivity : FlutterActivity() {
             val pkg = call.argument<String>("package")
             when (call.method) {
                 "getApps" -> Thread {
-                    val list = try { loadApps() } catch (e: Exception) { emptyList<Map<String, Any>>() }
+                    val pack = call.argument<String>("iconPack") ?: ""
+                    val list = try { loadApps(pack) } catch (e: Exception) { emptyList<Map<String, Any>>() }
                     runOnUiThread { result.success(list) }
                 }.start()
                 "launch" -> {
@@ -260,6 +266,79 @@ class MainActivity : FlutterActivity() {
                 "openEvent" -> result.success(open(Intent(Intent.ACTION_VIEW,
                     ContentUris.withAppendedId(CalendarContract.Events.CONTENT_URI, (call.argument<Number>("id") ?: 0).toLong()))))
                 "online" -> result.success(isOnline())
+                // ---------- Icon packs ----------
+                "iconPacks" -> {
+                    val seen = LinkedHashMap<String, String>()
+                    for (action in listOf("org.adw.launcher.THEMES", "com.novalauncher.THEME",
+                            "com.teslacoilsw.launcher.THEME", "com.gau.go.launcherex.theme", "com.anddoes.launcher.THEME")) {
+                        try {
+                            for (ri in packageManager.queryIntentActivities(Intent(action), 0)) {
+                                val p = ri.activityInfo.packageName
+                                if (!seen.containsKey(p)) seen[p] = ri.loadLabel(packageManager).toString()
+                            }
+                        } catch (_: Exception) {}
+                    }
+                    result.success(seen.map { mapOf("package" to it.key, "label" to it.value) })
+                }
+                // ---------- Global search ----------
+                "searchSms" -> Thread {
+                    val l = try { searchSms(call.argument<String>("q") ?: "") } catch (e: Exception) { emptyList<Map<String, Any>>() }
+                    runOnUiThread { result.success(l) }
+                }.start()
+                "searchFiles" -> Thread {
+                    val l = try { searchFiles(call.argument<String>("q") ?: "") } catch (e: Exception) { emptyList<Map<String, Any>>() }
+                    runOnUiThread { result.success(l) }
+                }.start()
+                "searchEvents" -> Thread {
+                    val l = try { searchEvents(call.argument<String>("q") ?: "") } catch (e: Exception) { emptyList<Map<String, Any>>() }
+                    runOnUiThread { result.success(l) }
+                }.start()
+                "openFile" -> {
+                    val i = Intent(Intent.ACTION_VIEW)
+                        .setDataAndType(Uri.parse(call.argument<String>("uri") ?: ""), call.argument<String>("mime") ?: "*/*")
+                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    result.success(open(Intent.createChooser(i, null)))
+                }
+                "searchPerms" -> result.success(mapOf("sms" to has(Manifest.permission.READ_SMS), "files" to filesAccess()))
+                "requestSms" -> {
+                    if (has(Manifest.permission.READ_SMS)) result.success(permMap()) else {
+                        permResult?.success(permMap())
+                        permResult = result
+                        requestPermissions(arrayOf(Manifest.permission.READ_SMS), permCode)
+                    }
+                }
+                "requestFiles" -> {
+                    if (Build.VERSION.SDK_INT >= 30) {
+                        result.success(
+                            open(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:$packageName"))) ||
+                                open(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+                        )
+                    } else {
+                        requestPermissions(arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE), 4733)
+                        result.success(true)
+                    }
+                }
+                // ---------- Backup & restore (Android's own file picker) ----------
+                "saveDoc" -> {
+                    docResult?.success(false)
+                    docResult = result
+                    docText = call.argument<String>("text")
+                    try {
+                        startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT)
+                            .addCategory(Intent.CATEGORY_OPENABLE)
+                            .setType("application/json")
+                            .putExtra(Intent.EXTRA_TITLE, call.argument<String>("name") ?: "vibe-backup.json"), saveCode)
+                    } catch (e: Exception) { docResult = null; result.success(false) }
+                }
+                "openDoc" -> {
+                    docResult?.success(null)
+                    docResult = result
+                    try {
+                        startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT)
+                            .addCategory(Intent.CATEGORY_OPENABLE)
+                            .setType("*/*"), openCode)
+                    } catch (e: Exception) { docResult = null; result.success(null) }
+                }
                 "nanoStatus" -> scope.launch { result.success(nanoStatus()) }
                 "nanoDownload" -> scope.launch {
                     var ok = false
@@ -479,6 +558,111 @@ class MainActivity : FlutterActivity() {
         try { cm.registerDefaultNetworkCallback(cb); netCallback = cb } catch (_: Exception) {}
     }
 
+    /** Reads an icon pack's appfilter (res/xml or assets) into component → drawable name. */
+    private fun iconPackMap(pack: String): Map<String, String> {
+        packMaps[pack]?.let { return it }
+        val out = HashMap<String, String>()
+        try {
+            val res = packageManager.getResourcesForApplication(pack)
+            val id = res.getIdentifier("appfilter", "xml", pack)
+            val parser: org.xmlpull.v1.XmlPullParser = if (id != 0) res.getXml(id) else {
+                val f = org.xmlpull.v1.XmlPullParserFactory.newInstance().newPullParser()
+                f.setInput(res.assets.open("appfilter.xml"), "UTF-8")
+                f
+            }
+            var ev = parser.eventType
+            while (ev != org.xmlpull.v1.XmlPullParser.END_DOCUMENT) {
+                if (ev == org.xmlpull.v1.XmlPullParser.START_TAG && parser.name == "item") {
+                    val comp = parser.getAttributeValue(null, "component")
+                    val draw = parser.getAttributeValue(null, "drawable")
+                    if (comp != null && draw != null) {
+                        out[comp] = draw
+                        // also index by package alone, for apps whose launch activity changed
+                        val m = Regex("ComponentInfo\\{([^/}]+)").find(comp)
+                        if (m != null && !out.containsKey("ComponentInfo{${m.groupValues[1]}}")) {
+                            out["ComponentInfo{${m.groupValues[1]}}"] = draw
+                        }
+                    }
+                }
+                ev = parser.next()
+            }
+        } catch (_: Exception) {}
+        packMaps[pack] = out
+        return out
+    }
+
+    private fun filesAccess(): Boolean =
+        if (Build.VERSION.SDK_INT >= 30) Environment.isExternalStorageManager()
+        else has(Manifest.permission.READ_EXTERNAL_STORAGE)
+
+    private fun like(q: String) = "%" + q.replace("%", "").replace("_", "") + "%"
+
+    private fun searchSms(q: String): List<Map<String, Any>> {
+        if (q.length < 2 || !has(Manifest.permission.READ_SMS)) return emptyList()
+        val out = ArrayList<Map<String, Any>>()
+        contentResolver.query(
+            Uri.parse("content://sms"), arrayOf("_id", "address", "body", "date", "type"),
+            "body LIKE ? OR address LIKE ?", arrayOf(like(q), like(q)), "date DESC"
+        )?.use { c ->
+            while (c.moveToNext() && out.size < 20) {
+                out.add(mapOf(
+                    "address" to (c.getString(1) ?: ""), "body" to (c.getString(2) ?: ""),
+                    "time" to c.getLong(3), "sent" to (c.getInt(4) == 2)
+                ))
+            }
+        }
+        return out
+    }
+
+    private fun searchFiles(q: String): List<Map<String, Any>> {
+        if (q.length < 2) return emptyList()
+        val uri = android.provider.MediaStore.Files.getContentUri("external")
+        val out = ArrayList<Map<String, Any>>()
+        contentResolver.query(
+            uri,
+            arrayOf(
+                android.provider.MediaStore.Files.FileColumns._ID,
+                android.provider.MediaStore.Files.FileColumns.DISPLAY_NAME,
+                android.provider.MediaStore.Files.FileColumns.MIME_TYPE,
+                android.provider.MediaStore.Files.FileColumns.SIZE,
+                android.provider.MediaStore.Files.FileColumns.DATE_MODIFIED
+            ),
+            android.provider.MediaStore.Files.FileColumns.DISPLAY_NAME + " LIKE ?", arrayOf(like(q)),
+            android.provider.MediaStore.Files.FileColumns.DATE_MODIFIED + " DESC"
+        )?.use { c ->
+            while (c.moveToNext() && out.size < 25) {
+                val name = c.getString(1) ?: continue
+                out.add(mapOf(
+                    "uri" to ContentUris.withAppendedId(uri, c.getLong(0)).toString(),
+                    "name" to name, "mime" to (c.getString(2) ?: "*/*"),
+                    "size" to c.getLong(3), "time" to c.getLong(4) * 1000
+                ))
+            }
+        }
+        return out
+    }
+
+    private fun searchEvents(q: String): List<Map<String, Any>> {
+        if (q.length < 2 || !has(Manifest.permission.READ_CALENDAR)) return emptyList()
+        val out = ArrayList<Map<String, Any>>()
+        contentResolver.query(
+            CalendarContract.Events.CONTENT_URI,
+            arrayOf(CalendarContract.Events._ID, CalendarContract.Events.TITLE, CalendarContract.Events.DTSTART,
+                CalendarContract.Events.ALL_DAY, CalendarContract.Events.EVENT_LOCATION, CalendarContract.Events.DISPLAY_COLOR),
+            CalendarContract.Events.TITLE + " LIKE ? OR " + CalendarContract.Events.EVENT_LOCATION + " LIKE ?",
+            arrayOf(like(q), like(q)), CalendarContract.Events.DTSTART + " DESC"
+        )?.use { c ->
+            while (c.moveToNext() && out.size < 15) {
+                out.add(mapOf(
+                    "id" to c.getLong(0), "title" to (c.getString(1) ?: "(No title)"), "begin" to c.getLong(2),
+                    "end" to c.getLong(2), "allDay" to (c.getInt(3) == 1), "location" to (c.getString(4) ?: ""),
+                    "color" to c.getInt(5)
+                ))
+            }
+        }
+        return out
+    }
+
     private fun has(p: String) = checkSelfPermission(p) == PackageManager.PERMISSION_GRANTED
 
     private fun permMap(): Map<String, Boolean> = mapOf(
@@ -486,7 +670,8 @@ class MainActivity : FlutterActivity() {
         "calls" to has(Manifest.permission.READ_CALL_LOG),
         "phone" to has(Manifest.permission.CALL_PHONE),
         "sms" to has(Manifest.permission.SEND_SMS),
-        "calendar" to has(Manifest.permission.READ_CALENDAR)
+        "calendar" to has(Manifest.permission.READ_CALENDAR),
+        "readSms" to has(Manifest.permission.READ_SMS)
     )
 
     private fun loadContacts(): List<Map<String, Any>> {
@@ -563,6 +748,20 @@ class MainActivity : FlutterActivity() {
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == saveCode) {
+            val uri = data?.data
+            val ok = resultCode == RESULT_OK && uri != null && try {
+                contentResolver.openOutputStream(uri, "wt")?.use { it.write((docText ?: "").toByteArray()) }; true
+            } catch (e: Exception) { false }
+            docResult?.success(ok); docResult = null; docText = null
+        }
+        if (requestCode == openCode) {
+            val uri = data?.data
+            val text = if (resultCode == RESULT_OK && uri != null) try {
+                contentResolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) }
+            } catch (e: Exception) { null } else null
+            docResult?.success(text); docResult = null
+        }
         if (requestCode == listenCode) {
             val text = data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()
             listenResult?.success(if (resultCode == RESULT_OK) text else null)
@@ -575,8 +774,10 @@ class MainActivity : FlutterActivity() {
         startActivity(i); true
     } catch (e: Exception) { false }
 
-    private fun loadApps(): List<Map<String, Any>> {
+    private fun loadApps(pack: String): List<Map<String, Any>> {
         val pm = packageManager
+        val map = if (pack.isNotEmpty()) iconPackMap(pack) else emptyMap()
+        val packRes = if (map.isNotEmpty()) try { pm.getResourcesForApplication(pack) } catch (e: Exception) { null } else null
         val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
         val seen = HashSet<String>()
         val out = ArrayList<Map<String, Any>>()
@@ -584,11 +785,20 @@ class MainActivity : FlutterActivity() {
             val p = ri.activityInfo.packageName
             if (p == packageName || !seen.add(p)) continue
             val cat = if (Build.VERSION.SDK_INT >= 26) ri.activityInfo.applicationInfo.category else -1
+            // Icon pack first ("ComponentInfo{package/activity}" → drawable), then the app's own icon
+            var themed: android.graphics.drawable.Drawable? = null
+            if (packRes != null) {
+                val name = map["ComponentInfo{$p/${ri.activityInfo.name}}"] ?: map["ComponentInfo{$p}"]
+                if (name != null) {
+                    val id = packRes.getIdentifier(name, "drawable", pack)
+                    if (id != 0) themed = try { packRes.getDrawable(id, null) } catch (e: Exception) { null }
+                }
+            }
             out.add(mapOf(
                 "label" to ri.loadLabel(pm).toString(),
                 "package" to p,
                 "category" to cat,
-                "icon" to iconBytes(ri.loadIcon(pm))
+                "icon" to iconBytes(themed ?: ri.loadIcon(pm))
             ))
         }
         return out
