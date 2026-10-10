@@ -69,6 +69,14 @@ class MainActivity : FlutterActivity() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val nano: GenerativeModel? by lazy { try { Generation.getClient() } catch (e: Throwable) { null } }
 
+    /** The first number (Long) inside a download status, whatever ML Kit named the field. */
+    private fun firstLong(o: Any): Long? = try {
+        o.javaClass.declaredFields.firstOrNull { it.type == java.lang.Long.TYPE }?.let {
+            it.isAccessible = true
+            it.getLong(o)
+        }
+    } catch (_: Throwable) { null }
+
     private suspend fun nanoStatus(): String = try {
         when (nano?.checkStatus()) {
             FeatureStatus.AVAILABLE -> "available"
@@ -384,8 +392,16 @@ class MainActivity : FlutterActivity() {
                 "nanoStatus" -> scope.launch { result.success(nanoStatus()) }
                 "nanoDownload" -> scope.launch {
                     var ok = false
+                    var total = 0L
                     try {
-                        nano?.download()?.collect { s -> if (s is DownloadStatus.DownloadCompleted) ok = true }
+                        nano?.download()?.collect { s ->
+                            if (s is DownloadStatus.DownloadCompleted) { ok = true; return@collect }
+                            // Started carries the total size, Progress the bytes so far
+                            val n = firstLong(s) ?: return@collect
+                            if (s.javaClass.simpleName.contains("Start")) total = n
+                            val done = if (s.javaClass.simpleName.contains("Start")) 0L else n
+                            try { channel?.invokeMethod("nanoProgress", mapOf("done" to done, "total" to total)) } catch (_: Throwable) {}
+                        }
                     } catch (e: Throwable) {}
                     result.success(ok || nanoStatus() == "available")
                 }
