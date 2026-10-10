@@ -19,6 +19,7 @@ class Native {
   static void Function(Map)? onNotification;
   static void Function(Map)? onShared;
   static void Function(Map)? onFired;
+  static void Function(bool)? onNet;
 
   static void init() {
     _c.setMethodCallHandler((call) async {
@@ -26,6 +27,7 @@ class Native {
       if (call.method == 'notif' && call.arguments is Map) onNotification?.call(call.arguments as Map);
       if (call.method == 'shared' && call.arguments is Map) onShared?.call(call.arguments as Map);
       if (call.method == 'fired' && call.arguments is Map) onFired?.call(call.arguments as Map);
+      if (call.method == 'net') onNet?.call(call.arguments == true);
     });
   }
 
@@ -42,6 +44,8 @@ class Native {
   static Future<List<Map>> listSched() async => await _c.invokeListMethod<Map>('listSched') ?? [];
   static Future<List<Map>> takeFired() async => await _c.invokeListMethod<Map>('takeFired') ?? [];
   static Future<void> requestPostNotif() => _c.invokeMethod('requestPostNotif');
+
+  static Future<bool> online() async => await _c.invokeMethod<bool>('online') ?? true;
 
   // Calendar
   static Future<bool> calPerms() async => await _c.invokeMethod<bool>('calPerms') ?? false;
@@ -146,6 +150,8 @@ class Prefs extends ChangeNotifier {
   bool showMedia = true;
   String messenger = 'whatsapp'; // default for "message X": whatsapp or sms
   bool brief = false;
+  bool offlineMode = false; // never use internet
+  List<int> queue = []; // timestamps of your questions waiting for internet
   int briefHour = 7, briefMinute = 30;
   String city = '';
   double? lat, lon;
@@ -167,6 +173,8 @@ class Prefs extends ChangeNotifier {
     showMedia = _p.getBool('showMedia') ?? true;
     messenger = _p.getString('messenger') ?? 'whatsapp';
     brief = _p.getBool('brief') ?? false;
+    offlineMode = _p.getBool('offlineMode') ?? false;
+    queue = (_p.getStringList('queue') ?? []).map(int.parse).toList();
     briefHour = _p.getInt('briefHour') ?? 7;
     briefMinute = _p.getInt('briefMinute') ?? 30;
     city = _p.getString('city') ?? '';
@@ -194,6 +202,9 @@ class Prefs extends ChangeNotifier {
   void setGeminiModel(String v) { geminiModel = v.trim(); _p.setString('geminiModel', geminiModel); notifyListeners(); }
 
   void setShowNotifs(bool v) { showNotifs = v; _p.setBool('showNotifs', v); notifyListeners(); }
+  void setOfflineMode(bool v) { offlineMode = v; _p.setBool('offlineMode', v); notifyListeners(); }
+  void setQueue(List<int> q) { queue = q; _p.setStringList('queue', q.map((e) => '$e').toList()); notifyListeners(); }
+
   void setBrief(bool v, {int? hour, int? minute}) {
     brief = v;
     briefHour = hour ?? briefHour;

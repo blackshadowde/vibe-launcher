@@ -33,6 +33,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
   bool _isDefault = true;
   bool _loaded = false;
   bool _thinking = false;
+  bool _online = true;
+  bool get _netOk => _online && !prefs.offlineMode;
   String? _attachImg; // picture waiting to be sent
   String? _attachText; // text or link shared from another app
   /// Messages already on screen when Vibe opened (or already animated): no entrance for them.
@@ -51,6 +53,16 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     Native.onNotification = _onNotif;
     Native.onShared = _onShared;
     Native.onFired = _onFired;
+    Native.onNet = (v) {
+      if (!mounted || v == _online) return;
+      setState(() => _online = v);
+      if (v && !prefs.offlineMode) _drainQueue();
+    };
+    Native.online().then((v) {
+      if (!mounted) return;
+      setState(() => _online = v);
+      if (v && !prefs.offlineMode) _drainQueue();
+    });
     if (prefs.brief) scheduleBrief();
     Native.takeShared().then((s) {
       if (s != null) _onShared(s);
@@ -246,12 +258,22 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
   }
 
   // ---------- Gemini ----------
-  Future<void> _askGemini(String question, {String? imagePath}) async {
+  Future<void> _askGemini(String question, {String? imagePath, List<Msg>? history}) async {
+    if (!_netOk && history == null) {
+      // No internet (or offline mode): park the question and answer it later
+      final mine = chat.msgs.lastWhere((m) => m.me, orElse: () => Msg(true, question));
+      prefs.setQueue([...prefs.queue, mine.ts]);
+      await Future.delayed(const Duration(milliseconds: 250));
+      _say(prefs.offlineMode
+          ? '📴 Offline mode is on, so I\'ll answer this when you turn it off. Apps, calls, SMS, reminders and music still work.'
+          : '📴 You\'re offline. I\'ll answer this as soon as you\'re back online.');
+      return;
+    }
     setState(() => _thinking = true);
     _toBottom();
     try {
       _askedNotifs = _ctxNotifs;
-      final res = await Gemini.ask(chat.msgs, _apps, _askedNotifs, imagePath: imagePath);
+      final res = await Gemini.ask(history ?? chat.msgs, _apps, _askedNotifs, imagePath: imagePath);
       if (!mounted) return;
       if (res.error != null) {
         _say(res.error!, error: true);
@@ -1212,8 +1234,52 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     );
   }
 
+  // ---------- Offline queue & offline mode ----------
+  bool _draining = false;
+
+  /// Back online: answer the questions asked while offline, each as a reply to the original.
+  Future<void> _drainQueue() async {
+    if (_draining || prefs.queue.isEmpty || !Gemini.enabled) return;
+    _draining = true;
+    final waiting = [...prefs.queue];
+    prefs.setQueue([]);
+    _say(waiting.length == 1
+        ? '📶 Back online. Answering what you asked earlier.'
+        : '📶 Back online. Answering your ${waiting.length} earlier questions.');
+    for (final ts in waiting) {
+      final i = chat.msgs.indexWhere((m) => m.me && m.ts == ts);
+      if (i < 0) continue;
+      final q = chat.msgs[i];
+      chat.add(Msg(false, '', quote: q.text, quoteName: prefs.name, quotePkg: 'me'));
+      await _askGemini(q.text, imagePath: q.img, history: chat.msgs.sublist(0, i + 1));
+    }
+    _draining = false;
+  }
+
+  void _setOffline(bool on) {
+    prefs.setOfflineMode(on);
+    if (on) {
+      _say('📴 Offline mode on. I won\'t use any internet. Apps, calls, SMS, reminders, calendar and music all still work, '
+          'and anything that needs Gemini waits until you turn it off.');
+    } else {
+      _say('Offline mode off.');
+      Native.online().then((v) {
+        setState(() => _online = v);
+        if (v) _drainQueue();
+      });
+    }
+  }
+
   // ---------- Daily brief, weather, calendar ----------
   Future<bool> _dayCommands(String text) async {
+    final off = RegExp(r'^(?:turn\s+)?(?:offline|data saver|no internet)\s*mode\s*(on|off)?$|^(?:turn\s+)?(on|off)\s+(?:offline|data saver)\s*mode$',
+            caseSensitive: false)
+        .firstMatch(text.trim());
+    if (off != null) {
+      final w = (off.group(1) ?? off.group(2))?.toLowerCase();
+      _setOffline(w == null ? !prefs.offlineMode : w == 'on');
+      return true;
+    }
     if (isBriefCmd(text)) {
       await _brief();
       return true;
@@ -1232,6 +1298,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
   }
 
   Future<void> _setCity(String name) async {
+    if (!_netOk) {
+      _say('I need internet to look up "$name". Try again when you\'re online.');
+      return;
+    }
     setState(() => _thinking = true);
     final g = await Weather.geocode(name);
     if (mounted) setState(() => _thinking = false);
@@ -1244,6 +1314,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
   }
 
   Future<void> _weather({bool tomorrow = false}) async {
+    if (!_netOk) {
+      _say(prefs.offlineMode ? '📴 Weather needs internet, and offline mode is on.' : '📴 Weather needs internet. You\'re offline.');
+      return;
+    }
     if (prefs.lat == null) {
       _say('Tell me your city first, like "my city is Mumbai".');
       return;
@@ -1317,7 +1391,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
         : now.subtract(const Duration(hours: 12)).millisecondsSinceEpoch;
     final start = DateTime(now.year, now.month, now.day), end = start.add(const Duration(days: 1));
 
-    final weather = await Weather.fetch();
+    final weather = _netOk ? await Weather.fetch() : null;
     final evs = await Native.calPerms() ? await Native.events(start, end) : <Map>[];
     final rems = (await Native.listSched())
         .where((e) => e['type'] != 'brief' && ((e['at'] as num?) ?? 0) < end.millisecondsSinceEpoch)
@@ -1601,7 +1675,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
   /// Top bar like Vibe's chat screen: big round avatar, bold name, status line, no divider.
   Widget _header(VC c) {
     String status = 'Online';
-    for (final m in chat.msgs.reversed) {
+    if (prefs.offlineMode || !_online) {
+      final q = prefs.queue.length;
+      status = '${prefs.offlineMode ? '📴 Offline mode' : '📴 Offline'}${q > 0 ? ' · $q waiting' : ''}';
+    } else for (final m in chat.msgs.reversed) {
       if (m.media) {
         if (m.text.startsWith('▶')) {
           final song = RegExp(r'"(.+?)"').firstMatch(m.text)?.group(1);

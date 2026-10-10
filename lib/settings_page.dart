@@ -130,6 +130,18 @@ class SettingsPage extends StatelessWidget {
               onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const _MemoryPage())),
             ),
           ]),
+          _section(c, 'OFFLINE MODE'),
+          _group(c, [
+            SwitchListTile(
+              title: Text('Offline mode', style: TextStyle(color: c.text)),
+              subtitle: Text(
+                  'Use no internet at all. Questions for Gemini wait until you turn it off'
+                  '${prefs.queue.isEmpty ? '' : ' (${prefs.queue.length} waiting)'}',
+                  style: TextStyle(color: c.faint)),
+              value: prefs.offlineMode,
+              onChanged: prefs.setOfflineMode,
+            ),
+          ]),
           _section(c, 'DAILY BRIEF'),
           _group(c, [
             SwitchListTile(
@@ -262,7 +274,7 @@ class SettingsPage extends StatelessWidget {
             ListTile(
               leading: Icon(Icons.info_outline_rounded, color: c.muted),
               title: Text('Vibe Launcher', style: TextStyle(color: c.text)),
-              subtitle: Text('Version 0.12.0', style: TextStyle(color: c.faint)),
+              subtitle: Text('Version 0.13.0', style: TextStyle(color: c.faint)),
             ),
           ]),
         ]),
