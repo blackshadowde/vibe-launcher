@@ -1,7 +1,12 @@
 package com.vibe.vibe_launcher
 
+import android.app.Notification
+import android.app.PendingIntent
+import android.app.RemoteInput
 import android.app.SearchManager
 import android.app.role.RoleManager
+import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
@@ -9,11 +14,16 @@ import android.graphics.Canvas
 import android.net.Uri
 import android.os.BatteryManager
 import android.os.Build
+import android.os.Bundle
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
 import android.os.StatFs
 import android.provider.AlarmClock
 import android.provider.MediaStore
 import android.provider.Settings
+import android.service.notification.NotificationListenerService
+import android.service.notification.StatusBarNotification
 import android.speech.RecognizerIntent
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -29,6 +39,7 @@ class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(engine: FlutterEngine) {
         super.configureFlutterEngine(engine)
         channel = MethodChannel(engine.dartExecutor.binaryMessenger, channelName)
+        VibeNotifService.listener = { n -> channel?.invokeMethod("notif", n) }
         channel!!.setMethodCallHandler { call, result ->
             val pkg = call.argument<String>("package")
             when (call.method) {
@@ -85,6 +96,20 @@ class MainActivity : FlutterActivity() {
                     if (!label.isNullOrBlank()) i.putExtra(AlarmClock.EXTRA_MESSAGE, label)
                     result.success(open(i))
                 }
+                "notifAccess" -> result.success(hasNotifAccess())
+                "openNotifAccess" -> {
+                    val cn = ComponentName(this, VibeNotifService::class.java)
+                    val ok = (Build.VERSION.SDK_INT >= 30 && open(
+                        Intent(Settings.ACTION_NOTIFICATION_LISTENER_DETAIL_SETTINGS)
+                            .putExtra(Settings.EXTRA_NOTIFICATION_LISTENER_COMPONENT_NAME, cn.flattenToString())
+                    )) || open(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+                    result.success(ok)
+                }
+                "drainNotifs" -> result.success(VibeNotifService.drain())
+                "replyNotif" -> result.success(
+                    VibeNotifService.reply(this, call.argument<String>("key") ?: "", call.argument<String>("text") ?: "")
+                )
+                "openNotif" -> result.success(VibeNotifService.open(call.argument<String>("key") ?: ""))
                 "listen" -> {
                     listenResult?.success(null)
                     listenResult = result
@@ -99,6 +124,16 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+    }
+
+    override fun onDestroy() {
+        VibeNotifService.listener = null
+        super.onDestroy()
+    }
+
+    private fun hasNotifAccess(): Boolean {
+        val flat = Settings.Secure.getString(contentResolver, "enabled_notification_listeners") ?: return false
+        return flat.contains(ComponentName(this, VibeNotifService::class.java).flattenToString())
     }
 
     // Pressing Home while the launcher is already open: tell Flutter to go back to the main view
@@ -175,5 +210,126 @@ class MainActivity : FlutterActivity() {
             "battery" to bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY),
             "charging" to (Build.VERSION.SDK_INT >= 23 && bm.isCharging)
         )
+    }
+}
+
+/** Receives every app's notifications so they can appear as messages in the Vibe chat. */
+class VibeNotifService : NotificationListenerService() {
+
+    companion object {
+        /** Set by MainActivity while the launcher is alive; otherwise notifications wait in [pending]. */
+        var listener: ((Map<String, Any>) -> Unit)? = null
+        val pending = ArrayList<Map<String, Any>>()
+        private val replyActions = HashMap<String, Notification.Action>()
+        private val contentIntents = HashMap<String, PendingIntent>()
+        private val lastSeen = LinkedHashMap<String, String>()
+
+        fun drain(): List<Map<String, Any>> {
+            val out = ArrayList(pending)
+            pending.clear()
+            return out
+        }
+
+        fun reply(ctx: Context, key: String, text: String): Boolean {
+            val a = replyActions[key] ?: return false
+            val inputs = a.remoteInputs ?: return false
+            return try {
+                val intent = Intent()
+                val bundle = Bundle()
+                for (ri in inputs) bundle.putCharSequence(ri.resultKey, text)
+                RemoteInput.addResultsToIntent(inputs, intent, bundle)
+                a.actionIntent.send(ctx, 0, intent)
+                true
+            } catch (e: Exception) {
+                false
+            }
+        }
+
+        fun open(key: String): Boolean = try {
+            contentIntents[key]?.send(); contentIntents.containsKey(key)
+        } catch (e: Exception) {
+            false
+        }
+
+        private fun <K, V> trim(m: MutableMap<K, V>, max: Int) {
+            val it = m.keys.iterator()
+            while (m.size > max && it.hasNext()) { it.next(); it.remove() }
+        }
+    }
+
+    private val main = Handler(Looper.getMainLooper())
+
+    override fun onNotificationPosted(sbn: StatusBarNotification) {
+        try { handle(sbn) } catch (_: Exception) {}
+    }
+
+    private fun handle(sbn: StatusBarNotification) {
+        if (sbn.packageName == packageName) return
+        val n = sbn.notification
+        if (n.flags and Notification.FLAG_ONGOING_EVENT != 0) return
+        if (n.flags and Notification.FLAG_GROUP_SUMMARY != 0) return
+        if (n.flags and Notification.FLAG_FOREGROUND_SERVICE != 0) return
+        when (n.category) {
+            Notification.CATEGORY_PROGRESS, Notification.CATEGORY_SERVICE,
+            Notification.CATEGORY_TRANSPORT, Notification.CATEGORY_SYSTEM -> return
+        }
+
+        val ex = n.extras
+        var title = ex.getCharSequence(Notification.EXTRA_TITLE)?.toString() ?: ""
+        var text = (ex.getCharSequence(Notification.EXTRA_BIG_TEXT)
+            ?: ex.getCharSequence(Notification.EXTRA_TEXT))?.toString() ?: ""
+
+        // Chat apps: take the newest message from MessagingStyle
+        @Suppress("DEPRECATION")
+        val msgs = ex.getParcelableArray(Notification.EXTRA_MESSAGES)
+        if (msgs != null && msgs.isNotEmpty()) {
+            val last = msgs.last() as? Bundle
+            val t = last?.getCharSequence("text")?.toString()
+            val sender = last?.getCharSequence("sender")?.toString()
+            val convo = ex.getCharSequence(Notification.EXTRA_CONVERSATION_TITLE)?.toString()
+            if (!t.isNullOrBlank()) {
+                text = t
+                if (!convo.isNullOrBlank() && !sender.isNullOrBlank()) title = "$sender · $convo"
+                else if (!sender.isNullOrBlank()) title = sender
+            }
+        }
+        title = title.trim(); text = text.trim()
+        if (title.isEmpty() && text.isEmpty()) return
+
+        // Apps re-post the same notification often; only pass on real changes
+        val sig = "$title|$text"
+        if (lastSeen[sbn.key] == sig) return
+        lastSeen[sbn.key] = sig
+        trim(lastSeen, 500)
+
+        var canReply = false
+        n.actions?.forEach { a ->
+            if (a.remoteInputs?.any { it.allowFreeFormInput } == true) {
+                replyActions[sbn.key] = a; canReply = true
+            }
+        }
+        n.contentIntent?.let { contentIntents[sbn.key] = it }
+        trim(replyActions, 300); trim(contentIntents, 300)
+
+        val label = try {
+            packageManager.getApplicationLabel(packageManager.getApplicationInfo(sbn.packageName, 0)).toString()
+        } catch (e: Exception) { sbn.packageName }
+
+        val map = mapOf<String, Any>(
+            "key" to sbn.key,
+            "pkg" to sbn.packageName,
+            "app" to label,
+            "title" to title,
+            "text" to text.take(2000),
+            "time" to sbn.postTime,
+            "canReply" to canReply
+        )
+        main.post {
+            val l = listener
+            if (l != null) l(map) else {
+                pending.add(map)
+                while (pending.size > 300) pending.removeAt(0)
+            }
+        }
     }
 }
