@@ -60,6 +60,7 @@ class MainActivity : FlutterActivity() {
         super.configureFlutterEngine(engine)
         channel = MethodChannel(engine.dartExecutor.binaryMessenger, channelName)
         VibeNotifService.listener = { n -> channel?.invokeMethod("notif", n) }
+        Sched.listener = { f -> channel?.invokeMethod("fired", f) }
         pendingShare = readShare(intent)
         channel!!.setMethodCallHandler { call, result ->
             val pkg = call.argument<String>("package")
@@ -193,6 +194,20 @@ class MainActivity : FlutterActivity() {
                             open(Intent(i).setPackage("com.whatsapp.w4b")) || open(i)
                     )
                 }
+                // ---------- Reminders & scheduled messages ----------
+                "schedule" -> result.success(Sched.add(this, call.arguments as Map<*, *>))
+                "cancelSched" -> { Sched.cancel(this, call.argument<String>("id") ?: ""); result.success(true) }
+                "listSched" -> {
+                    val a = Sched.items(this)
+                    result.success((0 until a.length()).map { Sched.toMap(a.getJSONObject(it)) })
+                }
+                "takeFired" -> result.success(Sched.takeFired(this))
+                "requestPostNotif" -> {
+                    if (Build.VERSION.SDK_INT < 33 || has(Manifest.permission.POST_NOTIFICATIONS)) result.success(true) else {
+                        requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 4723)
+                        result.success(false)
+                    }
+                }
                 "takeShared" -> { result.success(pendingShare); pendingShare = null }
                 "filesDir" -> result.success(filesDir.absolutePath)
                 "listen" -> {
@@ -213,6 +228,7 @@ class MainActivity : FlutterActivity() {
 
     override fun onDestroy() {
         VibeNotifService.listener = null
+        Sched.listener = null
         super.onDestroy()
     }
 
@@ -352,28 +368,7 @@ class MainActivity : FlutterActivity() {
         return out
     }
 
-    /** WhatsApp wants the number with country code and no symbols. */
-    private fun waNumber(raw: String): String {
-        val t = raw.trim()
-        val digits = t.filter { it.isDigit() }
-        if (t.startsWith("+")) return digits
-        if (digits.startsWith("00")) return digits.drop(2)
-        val iso = try {
-            (getSystemService(TELEPHONY_SERVICE) as TelephonyManager).simCountryIso.lowercase()
-        } catch (e: Exception) { "" }
-        val cc = mapOf(
-            "in" to "91", "us" to "1", "ca" to "1", "gb" to "44", "ae" to "971", "sa" to "966", "qa" to "974",
-            "kw" to "965", "om" to "968", "bh" to "973", "sg" to "65", "my" to "60", "ph" to "63", "id" to "62",
-            "pk" to "92", "bd" to "880", "lk" to "94", "np" to "977", "au" to "61", "nz" to "64", "de" to "49",
-            "fr" to "33", "it" to "39", "es" to "34", "nl" to "31", "gr" to "30", "no" to "47", "se" to "46",
-            "dk" to "45", "pl" to "48", "ie" to "353", "tr" to "90", "eg" to "20", "za" to "27", "ng" to "234",
-            "ke" to "254", "cn" to "86", "hk" to "852", "jp" to "81", "kr" to "82", "th" to "66", "vn" to "84",
-            "br" to "55", "mx" to "52", "ru" to "7", "ua" to "380"
-        )[iso] ?: ""
-        val local = digits.trimStart('0')
-        // 10 digits or fewer = local number: add the SIM's country code
-        return if (cc.isNotEmpty() && local.length <= 10) cc + local else local
-    }
+    private fun waNumber(raw: String) = waNumberFor(this, raw)
 
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
@@ -682,4 +677,191 @@ class VibeNotifService : NotificationListenerService() {
         )
         emit(map)
     }
+}
+
+/**
+ * Reminders and scheduled messages. Kept in Android's own storage and alarm system, so they
+ * fire on time even if Vibe is closed, and come back after a restart.
+ */
+object Sched {
+    var listener: ((Map<String, Any>) -> Unit)? = null
+    private fun prefs(ctx: Context) = ctx.getSharedPreferences("vibe_sched", Context.MODE_PRIVATE)
+
+    fun items(ctx: Context): org.json.JSONArray =
+        try { org.json.JSONArray(prefs(ctx).getString("items", "[]")) } catch (e: Exception) { org.json.JSONArray() }
+
+    private fun saveItems(ctx: Context, a: org.json.JSONArray) = prefs(ctx).edit().putString("items", a.toString()).apply()
+
+    fun toMap(o: org.json.JSONObject): Map<String, Any> {
+        val m = HashMap<String, Any>()
+        for (k in o.keys()) m[k] = o.get(k)
+        return m
+    }
+
+    private fun pi(ctx: Context, id: String): PendingIntent = PendingIntent.getBroadcast(
+        ctx, id.hashCode(),
+        Intent(ctx, VibeAlarmReceiver::class.java).putExtra("id", id),
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+    )
+
+    /** Returns true if the alarm is exact (rings on the minute). */
+    fun arm(ctx: Context, o: org.json.JSONObject): Boolean {
+        val am = ctx.getSystemService(android.app.AlarmManager::class.java)
+        val at = o.getLong("at")
+        val p = pi(ctx, o.getString("id"))
+        return try {
+            if (Build.VERSION.SDK_INT < 31 || am.canScheduleExactAlarms()) {
+                am.setExactAndAllowWhileIdle(android.app.AlarmManager.RTC_WAKEUP, at, p); true
+            } else {
+                am.setAndAllowWhileIdle(android.app.AlarmManager.RTC_WAKEUP, at, p); false
+            }
+        } catch (e: Exception) {
+            am.set(android.app.AlarmManager.RTC_WAKEUP, at, p); false
+        }
+    }
+
+    fun add(ctx: Context, m: Map<*, *>): Boolean {
+        val o = org.json.JSONObject()
+        for ((k, v) in m) if (k != null && v != null) o.put(k.toString(), v)
+        val a = items(ctx)
+        val out = org.json.JSONArray()
+        for (i in 0 until a.length()) if (a.getJSONObject(i).optString("id") != o.optString("id")) out.put(a.getJSONObject(i))
+        out.put(o)
+        saveItems(ctx, out)
+        return arm(ctx, o)
+    }
+
+    fun cancel(ctx: Context, id: String) {
+        val a = items(ctx)
+        val out = org.json.JSONArray()
+        for (i in 0 until a.length()) if (a.getJSONObject(i).optString("id") != id) out.put(a.getJSONObject(i))
+        saveItems(ctx, out)
+        ctx.getSystemService(android.app.AlarmManager::class.java).cancel(pi(ctx, id))
+    }
+
+    fun takeFired(ctx: Context): List<Map<String, Any>> {
+        val a = try { org.json.JSONArray(prefs(ctx).getString("fired", "[]")) } catch (e: Exception) { org.json.JSONArray() }
+        prefs(ctx).edit().putString("fired", "[]").apply()
+        return (0 until a.length()).map { toMap(a.getJSONObject(it)) }
+    }
+
+    /** Re-arms everything after a restart; anything already due fires now. */
+    fun rearm(ctx: Context) {
+        val a = items(ctx)
+        val now = System.currentTimeMillis()
+        for (i in 0 until a.length()) {
+            val o = a.getJSONObject(i)
+            if (o.getLong("at") <= now) fire(ctx, o.getString("id")) else arm(ctx, o)
+        }
+    }
+
+    fun fire(ctx: Context, id: String) {
+        val a = items(ctx)
+        var item: org.json.JSONObject? = null
+        val rest = org.json.JSONArray()
+        for (i in 0 until a.length()) {
+            val o = a.getJSONObject(i)
+            if (o.optString("id") == id) item = o else rest.put(o)
+        }
+        val o = item ?: return
+        saveItems(ctx, rest)
+
+        val type = o.optString("type")
+        val text = o.optString("text")
+        val name = o.optString("name")
+        val number = o.optString("number")
+        val via = o.optString("via")
+        var title = "⏰ Reminder"
+        var body = text
+        var tap: Intent = ctx.packageManager.getLaunchIntentForPackage(ctx.packageName)
+            ?: Intent(ctx, MainActivity::class.java)
+
+        if (type == "message") {
+            if (via == "sms") {
+                val late = System.currentTimeMillis() - o.getLong("at") > 60 * 60 * 1000
+                val ok = !late && ctx.checkSelfPermission(Manifest.permission.SEND_SMS) == PackageManager.PERMISSION_GRANTED &&
+                    try {
+                        @Suppress("DEPRECATION")
+                        val sm = if (Build.VERSION.SDK_INT >= 31) ctx.getSystemService(SmsManager::class.java) else SmsManager.getDefault()
+                        sm.sendMultipartTextMessage(number, null, sm.divideMessage(text), null, null); true
+                    } catch (e: Exception) { false }
+                o.put("sent", ok)
+                title = if (ok) "✓ Sent your SMS to $name" else "Couldn't send your SMS to $name"
+            } else {
+                title = "💬 Time to message $name"
+                body = if (text.isEmpty()) "Tap to open the chat" else "Tap to send: $text"
+                val d = waNumberFor(ctx, number)
+                tap = Intent(Intent.ACTION_VIEW, Uri.parse(
+                    "https://api.whatsapp.com/send?phone=$d" + (if (text.isEmpty()) "" else "&text=" + Uri.encode(text))
+                ))
+            }
+        }
+        o.put("firedAt", System.currentTimeMillis())
+        notify(ctx, id.hashCode(), title, body, tap)
+
+        val map = toMap(o)
+        val l = listener
+        if (l != null) Handler(Looper.getMainLooper()).post { l(map) } else {
+            val f = try { org.json.JSONArray(prefs(ctx).getString("fired", "[]")) } catch (e: Exception) { org.json.JSONArray() }
+            f.put(o)
+            prefs(ctx).edit().putString("fired", f.toString()).apply()
+        }
+    }
+
+    private fun notify(ctx: Context, nid: Int, title: String, body: String, tap: Intent) {
+        val nm = ctx.getSystemService(android.app.NotificationManager::class.java)
+        if (Build.VERSION.SDK_INT >= 26) {
+            nm.createNotificationChannel(
+                android.app.NotificationChannel("vibe_reminders", "Reminders", android.app.NotificationManager.IMPORTANCE_HIGH)
+            )
+        }
+        tap.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val content = PendingIntent.getActivity(ctx, nid, tap, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        @Suppress("DEPRECATION")
+        val b = if (Build.VERSION.SDK_INT >= 26) Notification.Builder(ctx, "vibe_reminders") else Notification.Builder(ctx)
+        b.setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
+            .setContentTitle(title)
+            .setContentText(body)
+            .setStyle(Notification.BigTextStyle().bigText(body))
+            .setContentIntent(content)
+            .setAutoCancel(true)
+            .setCategory(Notification.CATEGORY_REMINDER)
+        try { nm.notify(nid, b.build()) } catch (_: Exception) {}
+    }
+}
+
+class VibeAlarmReceiver : android.content.BroadcastReceiver() {
+    override fun onReceive(ctx: Context, intent: Intent) {
+        val id = intent.getStringExtra("id") ?: return
+        try { Sched.fire(ctx, id) } catch (_: Exception) {}
+    }
+}
+
+class VibeBootReceiver : android.content.BroadcastReceiver() {
+    override fun onReceive(ctx: Context, intent: Intent) {
+        try { Sched.rearm(ctx) } catch (_: Exception) {}
+    }
+}
+
+/** WhatsApp wants the number with country code and no symbols. */
+fun waNumberFor(ctx: Context, raw: String): String {
+    val t = raw.trim()
+    val digits = t.filter { it.isDigit() }
+    if (t.startsWith("+")) return digits
+    if (digits.startsWith("00")) return digits.drop(2)
+    val iso = try {
+        (ctx.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager).simCountryIso.lowercase()
+    } catch (e: Exception) { "" }
+    val cc = mapOf(
+        "in" to "91", "us" to "1", "ca" to "1", "gb" to "44", "ae" to "971", "sa" to "966", "qa" to "974",
+        "kw" to "965", "om" to "968", "bh" to "973", "sg" to "65", "my" to "60", "ph" to "63", "id" to "62",
+        "pk" to "92", "bd" to "880", "lk" to "94", "np" to "977", "au" to "61", "nz" to "64", "de" to "49",
+        "fr" to "33", "it" to "39", "es" to "34", "nl" to "31", "gr" to "30", "no" to "47", "se" to "46",
+        "dk" to "45", "pl" to "48", "ie" to "353", "tr" to "90", "eg" to "20", "za" to "27", "ng" to "234",
+        "ke" to "254", "cn" to "86", "hk" to "852", "jp" to "81", "kr" to "82", "th" to "66", "vn" to "84",
+        "br" to "55", "mx" to "52", "ru" to "7", "ua" to "380"
+    )[iso] ?: ""
+    val local = digits.trimStart('0')
+    // 10 digits or fewer = local number: add the SIM's country code
+    return if (cc.isNotEmpty() && local.length <= 10) cc + local else local
 }
