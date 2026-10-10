@@ -37,7 +37,19 @@ import android.provider.Settings
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.speech.RecognizerIntent
+import com.google.mlkit.genai.common.DownloadStatus
+import com.google.mlkit.genai.common.FeatureStatus
+import com.google.mlkit.genai.prompt.Generation
+import com.google.mlkit.genai.prompt.GenerativeModel
+import com.google.mlkit.genai.prompt.ImagePart
+import com.google.mlkit.genai.prompt.TextPart
+import com.google.mlkit.genai.prompt.generateContentRequest
 import io.flutter.embedding.android.FlutterActivity
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.ByteArrayOutputStream
@@ -47,6 +59,19 @@ class MainActivity : FlutterActivity() {
     private var channel: MethodChannel? = null
     private var listenResult: MethodChannel.Result? = null
     private var pendingShare: Map<String, Any>? = null
+
+    // ---------- On-phone AI: Gemini Nano through Android's AICore ----------
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private val nano: GenerativeModel? by lazy { try { Generation.getClient() } catch (e: Throwable) { null } }
+
+    private suspend fun nanoStatus(): String = try {
+        when (nano?.checkStatus()) {
+            FeatureStatus.AVAILABLE -> "available"
+            FeatureStatus.DOWNLOADABLE -> "downloadable"
+            FeatureStatus.DOWNLOADING -> "downloading"
+            else -> "unavailable"
+        }
+    } catch (e: Throwable) { "unavailable" }
     private var permResult: MethodChannel.Result? = null
     private val permCode = 4722
     private val peoplePerms = arrayOf(
@@ -235,6 +260,34 @@ class MainActivity : FlutterActivity() {
                 "openEvent" -> result.success(open(Intent(Intent.ACTION_VIEW,
                     ContentUris.withAppendedId(CalendarContract.Events.CONTENT_URI, (call.argument<Number>("id") ?: 0).toLong()))))
                 "online" -> result.success(isOnline())
+                "nanoStatus" -> scope.launch { result.success(nanoStatus()) }
+                "nanoDownload" -> scope.launch {
+                    var ok = false
+                    try {
+                        nano?.download()?.collect { s -> if (s is DownloadStatus.DownloadCompleted) ok = true }
+                    } catch (e: Throwable) {}
+                    result.success(ok || nanoStatus() == "available")
+                }
+                "nanoAsk" -> scope.launch {
+                    val prompt = call.argument<String>("prompt") ?: ""
+                    val img = call.argument<String>("image")
+                    val text = try {
+                        val bmp = if (img != null) BitmapFactory.decodeFile(img) else null
+                        val req = if (bmp != null) {
+                            generateContentRequest(ImagePart(bmp), TextPart(prompt)) {
+                                temperature = 0.4f
+                                maxOutputTokens = 600
+                            }
+                        } else {
+                            generateContentRequest(TextPart(prompt)) {
+                                temperature = 0.4f
+                                maxOutputTokens = 600
+                            }
+                        }
+                        nano?.generateContent(req)?.candidates?.firstOrNull()?.text
+                    } catch (e: Throwable) { null }
+                    result.success(text)
+                }
                 "takeShared" -> { result.success(pendingShare); pendingShare = null }
                 "filesDir" -> result.success(filesDir.absolutePath)
                 "listen" -> {
@@ -254,6 +307,7 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
+        scope.cancel()
         netCallback?.let { try { getSystemService(android.net.ConnectivityManager::class.java)?.unregisterNetworkCallback(it) } catch (_: Exception) {} }
         netCallback = null
         VibeNotifService.listener = null
