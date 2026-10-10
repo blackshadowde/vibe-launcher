@@ -997,25 +997,93 @@ class VibeNotifService : NotificationListenerService() {
         for (id in controllers.keys.filter { it !in ids }) {
             controllers.remove(id)?.let { (c, cb) -> try { c.unregisterCallback(cb) } catch (_: Exception) {} }
         }
-        for (c in list) {
-            val id = sessionId(c)
-            if (controllers.containsKey(id) || c.packageName == packageName) continue
-            val cb = object : MediaController.Callback() {
-                override fun onMetadataChanged(metadata: MediaMetadata?) = schedule(c)
-                override fun onPlaybackStateChanged(state: PlaybackState?) = schedule(c)
-            }
-            try { c.registerCallback(cb, main) } catch (_: Exception) { continue }
-            controllers[id] = c to cb
-            // Sessions already running when Vibe starts: remember them quietly instead of announcing
-            if (initial) mediaLast[c.packageName] = title(c) to state(c) else schedule(c)
-        }
+        for (c in list) watch(c, initial)
     }
 
-    private fun title(c: MediaController) =
-        c.metadata?.getString(MediaMetadata.METADATA_KEY_TITLE)?.trim() ?: ""
+    /** Follows one player's session: song changes, play and pause. */
+    private fun watch(c: MediaController, initial: Boolean) {
+        val id = sessionId(c)
+        if (controllers.containsKey(id) || c.packageName == packageName) return
+        val cb = object : MediaController.Callback() {
+            override fun onMetadataChanged(metadata: MediaMetadata?) = schedule(c)
+            override fun onPlaybackStateChanged(state: PlaybackState?) = schedule(c)
+        }
+        try { c.registerCallback(cb, main) } catch (_: Exception) { return }
+        controllers[id] = c to cb
+        // Sessions already running when Vibe starts: show what's playing now (Vibe skips repeats)
+        if (initial) {
+            if (!mediaLast.containsKey(c.packageName)) mediaLast[c.packageName] = "" to 0
+            if (state(c) == 1) schedule(c, true)
+        } else schedule(c)
+    }
 
-    private fun artist(c: MediaController) = (c.metadata?.getString(MediaMetadata.METADATA_KEY_ARTIST)
-        ?: c.metadata?.getString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST))?.trim() ?: ""
+    /**
+     * Music players show a media notification. Local players often don't list their session as
+     * "active", so take the session from the notification itself; with no session at all,
+     * read the song from the notification text.
+     */
+    private fun mediaFromNotif(sbn: StatusBarNotification) {
+        val pkg = sbn.packageName
+        if (pkg == packageName) return
+        val ex = sbn.notification.extras
+        @Suppress("DEPRECATION")
+        val token = try { ex.getParcelable<android.media.session.MediaSession.Token>(Notification.EXTRA_MEDIA_SESSION) } catch (_: Throwable) { null }
+        if (token != null) {
+            val c = try { MediaController(this, token) } catch (_: Throwable) { null }
+            if (c != null) {
+                if (controllers.containsKey(sessionId(c))) return // already following it
+                watch(c, false)
+                return
+            }
+        }
+        if (controllers.values.any { it.first.packageName == pkg }) return
+        // No session: use the notification's title / text and its Play or Pause button
+        val t = ex.getCharSequence(Notification.EXTRA_TITLE)?.toString()?.trim() ?: ""
+        if (t.isEmpty()) return
+        val artist = ex.getCharSequence(Notification.EXTRA_TEXT)?.toString()?.trim() ?: ""
+        val labels = sbn.notification.actions?.map { it.title?.toString()?.lowercase() ?: "" } ?: emptyList()
+        val st = when {
+            labels.any { it.contains("pause") } -> 1
+            labels.any { it.contains("play") } -> 2
+            else -> 1
+        }
+        val (lastT, lastSt) = mediaLast[pkg] ?: ("" to 0)
+        val event = when {
+            t != lastT && st == 1 -> if (lastT.isEmpty()) "play" else "track"
+            t == lastT && st != lastSt -> if (st == 1) "play" else "pause"
+            else -> null
+        }
+        mediaLast[pkg] = t to st
+        if (event == null) return
+        val label = try {
+            packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0)).toString()
+        } catch (e: Exception) { pkg }
+        emit(mapOf(
+            "type" to "media", "event" to event, "pkg" to pkg, "app" to label,
+            "title" to t, "artist" to artist, "prev" to lastT,
+            "time" to System.currentTimeMillis(), "initial" to false
+        ))
+    }
+
+    // Some players (e.g. Media3-based ones) only fill the display title or the description
+    private fun title(c: MediaController): String {
+        val m = c.metadata ?: return ""
+        return listOf(
+            m.getString(MediaMetadata.METADATA_KEY_TITLE),
+            m.getString(MediaMetadata.METADATA_KEY_DISPLAY_TITLE),
+            m.description?.title?.toString()
+        ).firstOrNull { !it.isNullOrBlank() }?.trim() ?: ""
+    }
+
+    private fun artist(c: MediaController): String {
+        val m = c.metadata ?: return ""
+        return listOf(
+            m.getString(MediaMetadata.METADATA_KEY_ARTIST),
+            m.getString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST),
+            m.getString(MediaMetadata.METADATA_KEY_DISPLAY_SUBTITLE),
+            m.description?.subtitle?.toString()
+        ).firstOrNull { !it.isNullOrBlank() }?.trim() ?: ""
+    }
 
     private fun state(c: MediaController): Int = when (c.playbackState?.state) {
         PlaybackState.STATE_PLAYING -> 1
@@ -1024,15 +1092,15 @@ class VibeNotifService : NotificationListenerService() {
     }
 
     /** Apps fire many callbacks per change; wait until things settle, then announce once. */
-    private fun schedule(c: MediaController) {
+    private fun schedule(c: MediaController, initial: Boolean = false) {
         val pkg = c.packageName
         mediaTimers[pkg]?.let { main.removeCallbacks(it) }
-        val r = Runnable { try { announce(c) } catch (_: Exception) {} }
+        val r = Runnable { try { announce(c, initial) } catch (_: Throwable) {} }
         mediaTimers[pkg] = r
         main.postDelayed(r, 450)
     }
 
-    private fun announce(c: MediaController) {
+    private fun announce(c: MediaController, initial: Boolean = false) {
         val pkg = c.packageName
         val t = title(c)
         val st = state(c)
@@ -1051,7 +1119,7 @@ class VibeNotifService : NotificationListenerService() {
         emit(mapOf(
             "type" to "media", "event" to event, "pkg" to pkg, "app" to label,
             "title" to t, "artist" to artist(c), "prev" to lastT,
-            "time" to System.currentTimeMillis()
+            "time" to System.currentTimeMillis(), "initial" to initial
         ))
     }
 
@@ -1080,6 +1148,12 @@ class VibeNotifService : NotificationListenerService() {
     private fun handle(sbn: StatusBarNotification) {
         if (sbn.packageName == packageName) return
         val n = sbn.notification
+        val template = n.extras.getString(Notification.EXTRA_TEMPLATE) ?: ""
+        if (n.extras.containsKey(Notification.EXTRA_MEDIA_SESSION) || template.contains("MediaStyle") ||
+            n.category == Notification.CATEGORY_TRANSPORT) {
+            try { mediaFromNotif(sbn) } catch (_: Throwable) {}
+            return
+        }
         if (n.flags and Notification.FLAG_ONGOING_EVENT != 0) return
         if (n.flags and Notification.FLAG_GROUP_SUMMARY != 0) return
         if (n.flags and Notification.FLAG_FOREGROUND_SERVICE != 0) return
