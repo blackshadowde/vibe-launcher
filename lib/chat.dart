@@ -25,6 +25,7 @@ class Msg {
   /// Rich card under a Vibe reply: {type: contact|sms|calls, ...}
   final Map? card;
   final String? img; // picture you sent (path on the phone)
+  final bool local; // answered by the on-phone AI (never sent to the cloud)
 
   Msg(this.me, this.text,
       {int? ts,
@@ -41,7 +42,8 @@ class Msg {
       this.quotePkg,
       this.media = false,
       this.card,
-      this.img})
+      this.img,
+      this.local = false})
       : ts = ts ?? DateTime.now().millisecondsSinceEpoch;
 
   bool get isNotif => pkg != null;
@@ -65,6 +67,7 @@ class Msg {
         if (media) 'md': true,
         if (card != null) 'x': card,
         if (img != null) 'i': img,
+        if (local) 'lo': true,
       };
   static Msg fromJson(Map j) => Msg(j['m'] == true, j['t'] ?? '',
       ts: j['s'] ?? 0,
@@ -81,7 +84,8 @@ class Msg {
       quotePkg: j['qp'],
       media: j['md'] == true,
       card: j['x'] is Map ? Map.from(j['x']) : null,
-      img: j['i']);
+      img: j['i'],
+      local: j['lo'] == true);
 }
 
 /// Chat history, kept on the phone (last 500 lines).

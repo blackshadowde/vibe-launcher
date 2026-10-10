@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// One installed app. In the UI it's a "user" in the DM list.
@@ -46,6 +47,12 @@ class Native {
   static Future<void> requestPostNotif() => _c.invokeMethod('requestPostNotif');
 
   static Future<bool> online() async => await _c.invokeMethod<bool>('online') ?? true;
+
+  // On-phone AI (Gemini Nano)
+  static Future<String> nanoStatus() async => await _c.invokeMethod<String>('nanoStatus') ?? 'unavailable';
+  static Future<bool> nanoDownload() async => await _c.invokeMethod<bool>('nanoDownload') ?? false;
+  static Future<String?> nanoAsk(String prompt, {String? image}) =>
+      _c.invokeMethod<String>('nanoAsk', {'prompt': prompt, 'image': image});
 
   // Calendar
   static Future<bool> calPerms() async => await _c.invokeMethod<bool>('calPerms') ?? false;
@@ -144,7 +151,12 @@ class Prefs extends ChangeNotifier {
   SortMode sort = SortMode.recent;
   bool haptics = true;
   String name = 'You';
+  /// API keys live in Android's encrypted Keystore storage, not in plain settings.
+  static const _vault = FlutterSecureStorage();
   String geminiKey = '';
+  String routerKey = ''; // OpenRouter, the backup when Gemini is busy
+  List<String> routerModels = []; // free models picked from OpenRouter's list
+  int routerModelsAt = 0;
   bool showNotifs = true;
   bool aiNotifs = true;
   bool showMedia = true;
@@ -167,7 +179,23 @@ class Prefs extends ChangeNotifier {
     sort = SortMode.values[_p.getInt('sort') ?? 0];
     haptics = _p.getBool('haptics') ?? true;
     name = _p.getString('name') ?? 'You';
-    geminiKey = _p.getString('geminiKey') ?? '';
+    // Keys: read from the encrypted vault; move any old plain-text key into it
+    try {
+      geminiKey = await _vault.read(key: 'geminiKey') ?? '';
+      routerKey = await _vault.read(key: 'routerKey') ?? '';
+      final old = _p.getString('geminiKey');
+      if (old != null) {
+        if (geminiKey.isEmpty && old.isNotEmpty) {
+          geminiKey = old;
+          await _vault.write(key: 'geminiKey', value: old);
+        }
+        await _p.remove('geminiKey');
+      }
+    } catch (_) {
+      geminiKey = _p.getString('geminiKey') ?? '';
+    }
+    routerModels = _p.getStringList('routerModels') ?? [];
+    routerModelsAt = _p.getInt('routerModelsAt') ?? 0;
     showNotifs = _p.getBool('showNotifs') ?? true;
     aiNotifs = _p.getBool('aiNotifs') ?? true;
     showMedia = _p.getBool('showMedia') ?? true;
@@ -198,7 +226,25 @@ class Prefs extends ChangeNotifier {
     notifyListeners();
   }
 
-  void setGeminiKey(String v) { geminiKey = v.trim(); _p.setString('geminiKey', geminiKey); notifyListeners(); }
+  void setGeminiKey(String v) {
+    geminiKey = v.trim();
+    _vault.write(key: 'geminiKey', value: geminiKey).catchError((_) {});
+    notifyListeners();
+  }
+
+  void setRouterKey(String v) {
+    routerKey = v.trim();
+    _vault.write(key: 'routerKey', value: routerKey).catchError((_) {});
+    routerModels = [];
+    notifyListeners();
+  }
+
+  void setRouterModels(List<String> m) {
+    routerModels = m;
+    routerModelsAt = DateTime.now().millisecondsSinceEpoch;
+    _p.setStringList('routerModels', m);
+    _p.setInt('routerModelsAt', routerModelsAt);
+  }
   void setGeminiModel(String v) { geminiModel = v.trim(); _p.setString('geminiModel', geminiModel); notifyListeners(); }
 
   void setShowNotifs(bool v) { showNotifs = v; _p.setBool('showNotifs', v); notifyListeners(); }

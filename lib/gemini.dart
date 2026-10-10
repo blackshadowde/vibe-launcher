@@ -4,6 +4,7 @@ import 'dart:io';
 import 'chat.dart';
 import 'launcher.dart';
 import 'memory.dart';
+import 'privacy.dart';
 
 typedef Call = ({String name, Map<String, dynamic> args});
 typedef Source = ({String title, String url});
@@ -15,14 +16,16 @@ class GeminiResult {
   final String? error;
   /// 'busy' (overloaded / rate limited) or 'missing' (model not found): worth trying another model
   final String? retry;
-  GeminiResult({this.text = '', this.calls = const [], this.sources = const [], this.error, this.retry});
+  final String via; // gemini or openrouter
+  GeminiResult(
+      {this.text = '', this.calls = const [], this.sources = const [], this.error, this.retry, this.via = 'gemini'});
 }
 
 /// Talks to Google's Gemini API with the user's own key (stored only on the phone).
 class Gemini {
   static const defaultModel = 'gemini-flash-latest';
   static const fallbackModel = 'gemini-flash-lite-latest';
-  static bool get enabled => prefs.geminiKey.trim().isNotEmpty;
+  static bool get enabled => prefs.geminiKey.trim().isNotEmpty || prefs.routerKey.trim().isNotEmpty;
 
   static final _tools = [
     {
@@ -164,13 +167,15 @@ class Gemini {
   /// Recent chat as Gemini turns (text only), merged so roles alternate.
   static List<Map> _history(List<Msg> msgs) {
     final out = <Map>[];
-    // Error lines aren't real answers, so leave them out
-    final talk = msgs.where((m) => !m.isNotif && !m.error && m.text.trim().isNotEmpty).toList();
+    // Error lines aren't real answers, and on-phone answers may hold private details: leave both out
+    final talk = msgs.where((m) => !m.isNotif && !m.error && !m.local && m.text.trim().isNotEmpty).toList();
     for (final m in talk.length > 16 ? talk.sublist(talk.length - 16) : talk) {
       final role = m.me ? 'user' : 'model';
       final text = m.quote == null
           ? m.text
-          : '(replying to ${m.quoteName ?? 'a message'}: "${m.quote}") ${m.text}';
+          : Privacy.text(m.quote)
+              ? '(replying to ${m.quoteName ?? 'a message'}, a private message I won\'t share) ${m.text}'
+              : '(replying to ${m.quoteName ?? 'a message'}: "${m.quote}") ${m.text}';
       if (out.isNotEmpty && out.last['role'] == role) {
         if (role == 'user') {
           // An earlier message that never got an answer: drop it so Gemini answers the newest one
@@ -227,7 +232,11 @@ class Gemini {
         {'google_search': {}}
       ],
     };
-    return _post(body);
+    final r = await _post(body);
+    if (r.via == 'openrouter' && r.error == null) {
+      return GeminiResult(text: '${r.text}\n\n_(Gemini is busy, so this is from the backup AI without live search.)_', via: r.via);
+    }
+    return r;
   }
 
   /// Models your key can use for chat, newest-looking first. Null = couldn't load.
@@ -264,6 +273,16 @@ class Gemini {
 
   /// Tries your model, waits and tries again if it's busy, then falls back to the lighter model.
   static Future<GeminiResult> _post(Map body) async {
+    if (prefs.geminiKey.trim().isEmpty) return _router(body);
+    final r = await _postGemini(body);
+    if (r.error != null && prefs.routerKey.trim().isNotEmpty && !r.error!.contains('offline')) {
+      final b = await _router(body);
+      if (b.error == null) return b;
+    }
+    return r;
+  }
+
+  static Future<GeminiResult> _postGemini(Map body) async {
     final model = prefs.geminiModel.trim().isEmpty ? defaultModel : prefs.geminiModel.trim();
     final plan = <(String, int)>[
       (model, 0),
@@ -283,6 +302,110 @@ class Gemini {
       return GeminiResult(error: 'Gemini\'s free limit is used up for now. Try again in a minute.');
     }
     return GeminiResult(error: 'Gemini is busy right now. Try again in a moment.');
+  }
+
+  // ---------- OpenRouter: one key, many free models, used when Gemini is busy ----------
+  static Future<List<String>> _routerModels() async {
+    if (prefs.routerModels.isNotEmpty &&
+        DateTime.now().millisecondsSinceEpoch - prefs.routerModelsAt < 24 * 3600 * 1000) {
+      return prefs.routerModels;
+    }
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 15);
+    try {
+      final req = await client.getUrl(Uri.parse('https://openrouter.ai/api/v1/models'));
+      final res = await req.close().timeout(const Duration(seconds: 20));
+      final raw = await res.transform(utf8.decoder).join();
+      if (res.statusCode != 200) return prefs.routerModels;
+      final all = (jsonDecode(raw)['data'] as List? ?? []).whereType<Map>().where((m) {
+        final p = m['pricing'] as Map? ?? {};
+        final free = '${m['id']}'.endsWith(':free') || (p['prompt'] == '0' && p['completion'] == '0');
+        final params = (m['supported_parameters'] as List? ?? []).map((e) => '$e');
+        return free && params.contains('tools');
+      }).toList()
+        ..sort((a, b) => ((b['context_length'] as num?) ?? 0).compareTo((a['context_length'] as num?) ?? 0));
+      final ids = all.take(5).map((m) => '${m['id']}').toList();
+      if (ids.isNotEmpty) prefs.setRouterModels(ids);
+      return ids.isNotEmpty ? ids : prefs.routerModels;
+    } catch (_) {
+      return prefs.routerModels;
+    } finally {
+      client.close();
+    }
+  }
+
+  /// Sends the same request to OpenRouter in its (OpenAI-style) format.
+  static Future<GeminiResult> _router(Map body) async {
+    if (prefs.routerKey.trim().isEmpty) {
+      return GeminiResult(error: 'Add a Gemini or OpenRouter key in Vibe settings.');
+    }
+    final models = await _routerModels();
+    if (models.isEmpty) return GeminiResult(error: 'Couldn\'t reach OpenRouter right now.', via: 'openrouter');
+
+    final msgs = <Map>[];
+    final sys = (body['systemInstruction'] as Map?)?['parts']?[0]?['text'];
+    if (sys is String) msgs.add({'role': 'system', 'content': sys});
+    for (final c in (body['contents'] as List? ?? [])) {
+      if (c is! Map) continue;
+      final text = (c['parts'] as List? ?? [])
+          .whereType<Map>()
+          .where((p) => p['text'] is String)
+          .map((p) => p['text'] as String)
+          .join('\n');
+      if (text.isNotEmpty) msgs.add({'role': c['role'] == 'model' ? 'assistant' : 'user', 'content': text});
+    }
+    final tools = <Map>[];
+    for (final t in (body['tools'] as List? ?? [])) {
+      if (t is Map && t['functionDeclarations'] is List) {
+        for (final f in t['functionDeclarations'] as List) {
+          tools.add({'type': 'function', 'function': f});
+        }
+      }
+    }
+    final req = {
+      'model': models.first,
+      'models': models.take(3).toList(),
+      'messages': msgs,
+      if (tools.isNotEmpty) 'tools': tools,
+    };
+
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 15);
+    try {
+      final r = await client.postUrl(Uri.parse('https://openrouter.ai/api/v1/chat/completions'));
+      r.headers.contentType = ContentType.json;
+      r.headers.set('Authorization', 'Bearer ${prefs.routerKey.trim()}');
+      r.headers.set('X-Title', 'Vibe Launcher');
+      r.add(utf8.encode(jsonEncode(req)));
+      final res = await r.close().timeout(const Duration(seconds: 60));
+      final raw = await res.transform(utf8.decoder).join();
+      Map j = {};
+      try {
+        j = jsonDecode(raw) as Map;
+      } catch (_) {}
+      if (res.statusCode == 401 || res.statusCode == 403) {
+        return GeminiResult(error: 'Your OpenRouter key isn\'t working. Check it in Vibe settings.', via: 'openrouter');
+      }
+      if (res.statusCode != 200 || j['choices'] is! List || (j['choices'] as List).isEmpty) {
+        return GeminiResult(error: 'The backup AI is busy too. Try again in a moment.', via: 'openrouter');
+      }
+      final m = ((j['choices'] as List).first as Map)['message'] as Map? ?? {};
+      final calls = <Call>[];
+      for (final tc in (m['tool_calls'] as List? ?? [])) {
+        final f = (tc is Map ? tc['function'] : null) as Map?;
+        if (f == null) continue;
+        Map<String, dynamic> args = {};
+        try {
+          args = Map<String, dynamic>.from(jsonDecode('${f['arguments'] ?? '{}'}') as Map);
+        } catch (_) {}
+        calls.add((name: '${f['name']}', args: args));
+      }
+      return GeminiResult(text: '${m['content'] ?? ''}'.trim(), calls: calls, via: 'openrouter');
+    } on SocketException {
+      return GeminiResult(error: 'I\'m offline right now. I can still open your apps.', via: 'openrouter');
+    } catch (_) {
+      return GeminiResult(error: 'The backup AI didn\'t answer. Try again in a moment.', via: 'openrouter');
+    } finally {
+      client.close();
+    }
   }
 
   static Future<GeminiResult> _once(String model, Map body) async {

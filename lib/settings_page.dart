@@ -197,6 +197,37 @@ class SettingsPage extends StatelessWidget {
               ),
             ),
           ]),
+          _section(c, 'ON-PHONE AI'),
+          _group(c, [
+            FutureBuilder<String>(
+              future: Native.nanoStatus(),
+              builder: (context, snap) {
+                final st = snap.data ?? '…';
+                final label = {
+                  'available': 'Ready: works offline, nothing leaves your phone',
+                  'downloadable': 'Not downloaded yet: tap to download (Wi-Fi recommended)',
+                  'downloading': 'Downloading… you can keep using Vibe',
+                  'unavailable': 'Not available on this phone right now',
+                }[st] ?? 'Checking…';
+                return ListTile(
+                  leading: Icon(Icons.phone_android_rounded, color: c.muted),
+                  title: Text('Gemini Nano', style: TextStyle(color: c.text)),
+                  subtitle: Text(label,
+                      style: TextStyle(color: st == 'available' ? VC.green : st == 'unavailable' ? c.faint : VC.yellow)),
+                  onTap: st == 'downloadable'
+                      ? () async {
+                          final m = ScaffoldMessenger.of(context);
+                          m.showSnackBar(const SnackBar(content: Text('Downloading the on-phone AI…')));
+                          final ok = await Native.nanoDownload();
+                          m.showSnackBar(SnackBar(
+                              content: Text(ok ? 'On-phone AI is ready' : 'Download didn\'t finish. Try again on Wi-Fi')));
+                          prefs.refresh();
+                        }
+                      : null,
+                );
+              },
+            ),
+          ]),
           _section(c, 'VIBE AI (GEMINI)'),
           _group(c, [
             ListTile(
@@ -249,6 +280,40 @@ class SettingsPage extends StatelessWidget {
                   if (ok == true) prefs.setGeminiKey('');
                 },
               ),
+            ListTile(
+              leading: Icon(Icons.alt_route_rounded, color: c.muted),
+              title: Text('Backup AI (OpenRouter)', style: TextStyle(color: c.text)),
+              subtitle: Text(
+                  prefs.routerKey.isEmpty
+                      ? 'Optional: answers when Gemini is busy'
+                      : 'Set (…${prefs.routerKey.substring(prefs.routerKey.length < 4 ? 0 : prefs.routerKey.length - 4)})${prefs.routerModels.isEmpty ? '' : ' · ${prefs.routerModels.length} free models'}',
+                  style: TextStyle(color: c.faint)),
+              trailing: Icon(Icons.chevron_right_rounded, color: c.faint),
+              onTap: () => _editText(context, 'OpenRouter API key', prefs.routerKey, prefs.setRouterKey,
+                  hint: 'Paste your key', secret: true),
+            ),
+            ListTile(
+              leading: Icon(Icons.open_in_new_rounded, color: c.muted),
+              title: Text('Get a free OpenRouter key', style: TextStyle(color: c.text)),
+              subtitle: Text('openrouter.ai → Keys', style: TextStyle(color: c.faint)),
+              onTap: () => Native.openUrl('https://openrouter.ai/keys'),
+            ),
+          ]),
+          _section(c, 'PRIVACY'),
+          _group(c, [
+            ListTile(
+              leading: const Icon(Icons.shield_rounded, color: VC.green),
+              title: Text('Private details stay on your phone', style: TextStyle(color: c.text)),
+              subtitle: Text(
+                  'OTPs, bank and payment alerts, passwords and notifications from banking, payment and '
+                  'authenticator apps are never sent to Gemini or OpenRouter. "What did I miss?" is summarised '
+                  'on the phone when the on-phone AI is ready.\n\n'
+                  'Free cloud AI tiers may use what you send to improve their services, so avoid sending '
+                  'anything you wouldn\'t want a stranger to read. Keys are stored encrypted, and Vibe\'s '
+                  'data is excluded from cloud backups.',
+                  style: TextStyle(color: c.faint, height: 1.35)),
+              isThreeLine: true,
+            ),
           ]),
           _section(c, 'FEEL'),
           _group(c, [
@@ -274,7 +339,7 @@ class SettingsPage extends StatelessWidget {
             ListTile(
               leading: Icon(Icons.info_outline_rounded, color: c.muted),
               title: Text('Vibe Launcher', style: TextStyle(color: c.text)),
-              subtitle: Text('Version 0.13.0', style: TextStyle(color: c.faint)),
+              subtitle: Text('Version 0.14.0', style: TextStyle(color: c.faint)),
             ),
           ]),
         ]),

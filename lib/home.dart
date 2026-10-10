@@ -8,6 +8,7 @@ import 'launcher.dart';
 import 'main.dart';
 import 'memory.dart';
 import 'people.dart';
+import 'privacy.dart';
 import 'day.dart';
 import 'sched.dart';
 import 'profile_sheet.dart';
@@ -34,6 +35,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
   bool _loaded = false;
   bool _thinking = false;
   bool _online = true;
+  String _nano = 'unknown'; // on-phone AI: available / downloadable / downloading / unavailable
   bool get _netOk => _online && !prefs.offlineMode;
   String? _attachImg; // picture waiting to be sent
   String? _attachText; // text or link shared from another app
@@ -58,6 +60,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
       setState(() => _online = v);
       if (v && !prefs.offlineMode) _drainQueue();
     };
+    Native.nanoStatus().then((v) {
+      if (mounted) setState(() => _nano = v);
+    });
     Native.online().then((v) {
       if (!mounted) return;
       setState(() => _online = v);
@@ -182,8 +187,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     }
     final pc = People.parse(text);
     if (pc != null && await _people(pc)) return;
+    if (isMissCmd(text) && await _whatDidIMiss()) return;
     final r = Brain.handle(text, _apps);
-    if (!r.sure && Gemini.enabled) {
+    if (!r.sure && (Gemini.enabled || _nano == 'available')) {
       await _askGemini(text);
     } else {
       await Future.delayed(const Duration(milliseconds: 250));
@@ -192,8 +198,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
   }
 
   void _say(String text,
-      {List<String> apps = const [], List<Map> links = const [], bool error = false, Map? card}) {
-    chat.add(Msg(false, text, apps: apps, links: links, error: error, card: card));
+      {List<String> apps = const [], List<Map> links = const [], bool error = false, Map? card, bool local = false}) {
+    chat.add(Msg(false, text, apps: apps, links: links, error: error, card: card, local: local));
     _toBottom();
   }
 
@@ -259,6 +265,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
 
   // ---------- Gemini ----------
   Future<void> _askGemini(String question, {String? imagePath, List<Msg>? history}) async {
+    // No cloud key, or no internet: the on-phone AI answers if it can
+    if (history == null && (!_netOk || !Gemini.enabled) && _nano == 'available') {
+      if (await _askNano(question, imagePath: imagePath)) return;
+    }
     if (!_netOk && history == null) {
       // No internet (or offline mode): park the question and answer it later
       final mine = chat.msgs.lastWhere((m) => m.me, orElse: () => Msg(true, question));
@@ -1234,6 +1244,78 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     );
   }
 
+  // ---------- On-phone AI (Gemini Nano) ----------
+  String _nanoPrompt(String question, {String extra = ''}) {
+    final b = StringBuffer()
+      ..writeln('You are Vibe, a friendly assistant built into the user\'s phone launcher.')
+      ..writeln('Reply briefly and naturally, in the same language the user writes in. You cannot browse the internet.')
+      ..writeln('User\'s name: ${prefs.name}. Now: ${stamp(DateTime.now())}.');
+    if (memory.facts.isNotEmpty) {
+      b.writeln('Things the user asked you to remember:');
+      for (final f in memory.facts.take(30)) {
+        b.writeln('- $f');
+      }
+    }
+    if (extra.isNotEmpty) b.writeln(extra);
+    final talk = chat.msgs.where((m) => !m.isNotif && !m.error && m.text.trim().isNotEmpty && m.card == null).toList();
+    final recent = talk.length > 10 ? talk.sublist(talk.length - 10) : talk;
+    b.writeln('\nConversation:');
+    for (final m in recent) {
+      if (m.me && m.text == question && m == recent.last) continue;
+      final t = m.text.length > 400 ? '${m.text.substring(0, 400)}…' : m.text;
+      b.writeln('${m.me ? 'User' : 'Vibe'}: $t');
+    }
+    b.writeln('User: $question');
+    b.write('Vibe:');
+    var p = b.toString();
+    if (p.length > 9000) p = p.substring(p.length - 9000);
+    return p;
+  }
+
+  /// Answers on the phone. False if the on-phone AI couldn't.
+  Future<bool> _askNano(String question, {String? imagePath, String extra = ''}) async {
+    setState(() => _thinking = true);
+    _toBottom();
+    final text = await Native.nanoAsk(_nanoPrompt(question, extra: extra), image: imagePath);
+    if (mounted) setState(() => _thinking = false);
+    if (text == null || text.trim().isEmpty) return false;
+    _say(text.trim(), local: true);
+    return true;
+  }
+
+  /// "What did I miss?": summarised on the phone when possible, so private notifications stay private.
+  Future<bool> _whatDidIMiss() async {
+    final since = DateTime.now().subtract(const Duration(hours: 24)).millisecondsSinceEpoch;
+    final notifs = chat.msgs.reversed.where((m) => m.isNotif && !m.media && m.ts > since).take(40).toList();
+    if (notifs.isEmpty) {
+      _say('Nothing new in the last 24 hours. 🎉');
+      return true;
+    }
+    if (_nano == 'available') {
+      final list = notifs
+          .map((m) => '- ${clock(DateTime.fromMillisecondsSinceEpoch(m.ts))} ${m.app}'
+              '${(m.title ?? '').isEmpty ? '' : ' / ${m.title}'}: '
+              '${m.text.length > 160 ? '${m.text.substring(0, 160)}…' : m.text}')
+          .join('\n');
+      final ok = await _askNano('What did I miss? Summarise these notifications in a few short lines, '
+          'most important first. Never repeat OTP codes or full account numbers.',
+          extra: 'Notifications from the last 24 hours (newest first):\n$list');
+      if (ok) return true;
+    }
+    if (Gemini.enabled && _netOk) return false; // let Gemini answer with private ones filtered out
+    // No AI available: a simple count per app
+    final counts = <String, int>{};
+    for (final m in notifs) {
+      counts[m.app ?? m.pkg!] = (counts[m.app ?? m.pkg!] ?? 0) + 1;
+    }
+    final lines = (counts.entries.toList()..sort((a, b) => b.value.compareTo(a.value)))
+        .take(8)
+        .map((e) => '• ${e.key}: ${e.value}')
+        .join('\n');
+    _say('In the last 24 hours:\n$lines');
+    return true;
+  }
+
   // ---------- Offline queue & offline mode ----------
   bool _draining = false;
 
@@ -1941,7 +2023,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
                     ),
                   ],
                   const SizedBox(width: 8),
-                  Text(stamp(t), style: TextStyle(color: c.faint, fontSize: 12)),
+                  Flexible(
+                    flex: 0,
+                    child: Text(stamp(t), overflow: TextOverflow.ellipsis, style: TextStyle(color: c.faint, fontSize: 12)),
+                  ),
+                  if (m.local) ...[
+                    const SizedBox(width: 6),
+                    Icon(Icons.phone_android_rounded, size: 12, color: c.faint),
+                    Text(' On-phone', style: TextStyle(color: c.faint, fontSize: 11)),
+                  ],
                 ]),
                 const SizedBox(height: 2),
                 content,
@@ -2206,7 +2296,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
   List<Msg> get _ctxNotifs {
     if (!prefs.aiNotifs) return [];
     final since = DateTime.now().subtract(const Duration(hours: 24)).millisecondsSinceEpoch;
-    return chat.msgs.reversed.where((m) => m.isNotif && !m.media && m.ts > since).take(25).toList();
+    // OTPs, bank/payment alerts and other private details never go to a cloud AI
+    return chat.msgs.reversed
+        .where((m) => m.isNotif && !m.media && m.ts > since && !Privacy.msg(m))
+        .take(25)
+        .toList();
   }
 
   // ---------- long-press Vibe's avatar: recent apps pane ----------
