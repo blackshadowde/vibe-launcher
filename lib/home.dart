@@ -8,6 +8,7 @@ import 'launcher.dart';
 import 'main.dart';
 import 'memory.dart';
 import 'people.dart';
+import 'day.dart';
 import 'sched.dart';
 import 'profile_sheet.dart';
 import 'settings_page.dart';
@@ -50,6 +51,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     Native.onNotification = _onNotif;
     Native.onShared = _onShared;
     Native.onFired = _onFired;
+    if (prefs.brief) scheduleBrief();
     Native.takeShared().then((s) {
       if (s != null) _onShared(s);
     });
@@ -159,7 +161,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
       _say(mem);
       return;
     }
+    if (await _dayCommands(text)) return;
     if (await _schedule(text)) return;
+    final cal = CalCmd.parse(text);
+    if (cal != null) {
+      await _calendar(cal);
+      return;
+    }
     final pc = People.parse(text);
     if (pc != null && await _people(pc)) return;
     final r = Brain.handle(text, _apps);
@@ -384,6 +392,22 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
         await _listSched();
       case 'cancel_reminder':
         await _cancelByText(str('about'));
+      case 'daily_brief':
+        await _brief();
+      case 'weather':
+        await _weather(tomorrow: str('day') == 'tomorrow');
+      case 'list_events':
+        final d = DateTime.tryParse(str('date')) ?? DateTime.now();
+        await _calendar(CalCmd('list', DateTime(d.year, d.month, d.day)));
+      case 'add_event':
+        final start = DateTime.tryParse(str('start'));
+        if (start == null) {
+          _say('I couldn\'t work out when that is.');
+        } else {
+          await _calendar(CalCmd('add', DateTime(start.year, start.month, start.day),
+              title: str('title'), at: start),
+              end: DateTime.tryParse(str('end')), location: str('location'));
+        }
       case 'remember':
         final f = memory.add(str('fact'));
         _say(preface.isNotEmpty ? preface : 'Got it. I\'ll remember: $f');
@@ -594,7 +618,150 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     Widget pill(String label, Color col) => Text(label, style: TextStyle(color: col, fontWeight: FontWeight.w700));
     DateTime atOf(Map d) => DateTime.fromMillisecondsSinceEpoch((d['at'] as num?)?.toInt() ?? 0);
 
+    Widget weatherBox(Map w) => Row(children: [
+          Text(w['emoji'].toString(), style: const TextStyle(fontSize: 34)),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(
+                  w['now'] != null ? '${w['now']}° · ${w['desc']}' : '${w['desc']}',
+                  style: TextStyle(color: c.text, fontWeight: FontWeight.w700, fontSize: 17)),
+              Text('H ${w['max']}°  L ${w['min']}°  ·  🌧 ${w['rain']}%  ·  ${w['city']}',
+                  style: TextStyle(color: c.muted, fontSize: 13)),
+            ]),
+          ),
+        ]);
+    Widget eventRow(Map e) {
+      final b = DateTime.fromMillisecondsSinceEpoch((e['begin'] as num).toInt());
+      final col = Color((e['color'] as num?)?.toInt() ?? 0xFF5865F2).withValues(alpha: 1);
+      return InkWell(
+        onTap: () => Native.openEvent((e['id'] as num?)?.toInt() ?? 0),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 5),
+          child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Container(width: 4, height: 34, decoration: BoxDecoration(color: col, borderRadius: BorderRadius.circular(2))),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(e['title'].toString(),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(color: c.text, fontWeight: FontWeight.w600, fontSize: 15)),
+                Text(
+                    [
+                      e['allDay'] == true ? 'All day' : clock(b),
+                      if ((e['location'] ?? '').toString().isNotEmpty) e['location'].toString(),
+                    ].join(' · '),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(color: c.faint, fontSize: 12)),
+              ]),
+            ),
+          ]),
+        ),
+      );
+    }
+
+    Widget section(String title, List<Widget> kids) => Padding(
+          padding: const EdgeInsets.only(top: 12),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(title,
+                style: TextStyle(color: c.faint, fontSize: 12, fontWeight: FontWeight.w700, letterSpacing: 0.4)),
+            const SizedBox(height: 4),
+            ...kids,
+          ]),
+        );
+
     switch (card['type']) {
+      case 'weather':
+        return Container(
+          margin: const EdgeInsets.only(top: 6),
+          constraints: const BoxConstraints(maxWidth: 340),
+          decoration: box(),
+          padding: const EdgeInsets.all(12),
+          child: weatherBox(card),
+        );
+      case 'events':
+        return Container(
+          margin: const EdgeInsets.only(top: 6),
+          constraints: const BoxConstraints(maxWidth: 340),
+          decoration: box(),
+          padding: const EdgeInsets.fromLTRB(12, 6, 12, 6),
+          child: Column(children: [for (final e in List<Map>.from(card['items'] ?? const [])) eventRow(e)]),
+        );
+      case 'brief':
+        final evs = List<Map>.from(card['events'] ?? const []);
+        final rems = List<Map>.from(card['reminders'] ?? const []);
+        final missed = List<Map>.from(card['missed'] ?? const []);
+        final apps = List<Map>.from(card['apps'] ?? const []);
+        return Container(
+          margin: const EdgeInsets.only(top: 6),
+          constraints: const BoxConstraints(maxWidth: 360),
+          decoration: box(),
+          padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(card['date'].toString(),
+                style: TextStyle(color: c.text, fontSize: 18, fontWeight: FontWeight.w800)),
+            if (card['weather'] is Map) ...[const SizedBox(height: 10), weatherBox(card['weather'])],
+            if (card['calAccess'] == true)
+              section('📅  TODAY', [
+                if (evs.isEmpty) Text('Nothing on your calendar. 🎉', style: TextStyle(color: c.muted)),
+                for (final e in evs) eventRow(e),
+              ]),
+            if (rems.isNotEmpty)
+              section('⏰  REMINDERS', [
+                for (final r0 in rems)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 2),
+                    child: Text(
+                        '${clock(DateTime.fromMillisecondsSinceEpoch((r0['at'] as num).toInt()))}  ·  '
+                        '${r0['type'] == 'message' ? 'Message ${r0['name']}' : r0['text']}',
+                        style: TextStyle(color: c.text, fontSize: 14)),
+                  ),
+              ]),
+            if (missed.isNotEmpty)
+              section('📞  MISSED CALLS', [
+                for (final mc in missed)
+                  InkWell(
+                    onTap: () => Native.call(mc['number'].toString()),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 3),
+                      child: Row(children: [
+                        Expanded(
+                          child: Text(
+                              (mc['name'] ?? '').toString().isNotEmpty ? mc['name'].toString() : mc['number'].toString(),
+                              style: TextStyle(color: c.text, fontWeight: FontWeight.w600)),
+                        ),
+                        Text(clock(DateTime.fromMillisecondsSinceEpoch((mc['time'] as num).toInt())),
+                            style: TextStyle(color: c.faint, fontSize: 12)),
+                        const SizedBox(width: 8),
+                        const Icon(Icons.call_rounded, color: VC.green, size: 18),
+                      ]),
+                    ),
+                  ),
+              ]),
+            if (apps.isNotEmpty)
+              section('💬  WHILE YOU WERE AWAY', [
+                Wrap(spacing: 8, runSpacing: 6, children: [
+                  for (final a in apps)
+                    Container(
+                      padding: const EdgeInsets.fromLTRB(4, 3, 10, 3),
+                      decoration: BoxDecoration(color: c.card, borderRadius: BorderRadius.circular(20)),
+                      child: Row(mainAxisSize: MainAxisSize.min, children: [
+                        _miniAvatar(c, a['pkg']?.toString(), 20),
+                        const SizedBox(width: 6),
+                        Text('${a['app']}  ${a['count']}',
+                            style: TextStyle(color: c.text, fontSize: 13, fontWeight: FontWeight.w600)),
+                      ]),
+                    ),
+                ]),
+              ]),
+            if (card['battery'] != null)
+              section('🔋  PHONE', [
+                Text('Battery ${card['battery']}%', style: TextStyle(color: c.text, fontSize: 14)),
+              ]),
+          ]),
+        );
       case 'sched':
         return Container(
           margin: const EdgeInsets.only(top: 6),
@@ -1045,6 +1212,157 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     );
   }
 
+  // ---------- Daily brief, weather, calendar ----------
+  Future<bool> _dayCommands(String text) async {
+    if (isBriefCmd(text)) {
+      await _brief();
+      return true;
+    }
+    if (isWeatherCmd(text)) {
+      await _weather(tomorrow: text.toLowerCase().contains('tomorrow'));
+      return true;
+    }
+    final city = RegExp(r"^(?:my city is|i live in|set (?:my )?city(?: to)?)\s+(.+?)\W*$", caseSensitive: false)
+        .firstMatch(text.trim());
+    if (city != null) {
+      await _setCity(city.group(1)!);
+      return true;
+    }
+    return false;
+  }
+
+  Future<void> _setCity(String name) async {
+    setState(() => _thinking = true);
+    final g = await Weather.geocode(name);
+    if (mounted) setState(() => _thinking = false);
+    if (g == null) {
+      _say('I couldn\'t find "$name". Check the spelling, or try a nearby bigger city.', error: true);
+      return;
+    }
+    prefs.setCity(g.$1, g.$2, g.$3);
+    _say('Got it, your city is ${g.$1}. I\'ll use it for the weather.');
+  }
+
+  Future<void> _weather({bool tomorrow = false}) async {
+    if (prefs.lat == null) {
+      _say('Tell me your city first, like "my city is Mumbai".');
+      return;
+    }
+    setState(() => _thinking = true);
+    final w = await Weather.fetch();
+    if (mounted) setState(() => _thinking = false);
+    if (w == null) {
+      _say('I couldn\'t get the weather right now. Are you online?', error: true);
+      return;
+    }
+    _say(tomorrow ? 'Tomorrow in ${prefs.city.split(',').first}:' : 'Right now in ${prefs.city.split(',').first}:',
+        card: w.toCard(tomorrow: tomorrow));
+  }
+
+  Future<bool> _calendarAccess() async {
+    if (await Native.calPerms()) return true;
+    await Native.requestCalendar();
+    return Native.calPerms();
+  }
+
+  Future<void> _calendar(CalCmd cmd, {DateTime? end, String location = ''}) async {
+    if (cmd.action == 'list') {
+      if (!await _calendarAccess()) {
+        _say('I need calendar permission to see your plans.', error: true);
+        return;
+      }
+      final from = cmd.day, to = cmd.day.add(const Duration(days: 1));
+      final evs = await Native.events(from, to);
+      final label = dayLabel(cmd.day);
+      if (evs.isEmpty) {
+        _say('Nothing on your calendar ${label == 'Today' || label == 'Tomorrow' ? label.toLowerCase() : 'on $label'}. 🎉');
+        return;
+      }
+      _say('${label == 'Today' || label == 'Tomorrow' ? label : label}: ${evs.length} ${evs.length == 1 ? 'thing' : 'things'}',
+          card: {'type': 'events', 'items': evs});
+      return;
+    }
+    final start = cmd.at!;
+    final finish = (end != null && end.isAfter(start)) ? end : start.add(const Duration(hours: 1));
+    await _calendarAccess();
+    final res = await Native.addEvent(cmd.title, start, finish, location: location);
+    if (res.startsWith('added')) {
+      _say('📅 Added to your calendar:', card: {
+        'type': 'events',
+        'items': [
+          {
+            'id': int.tryParse(res.split(':').last) ?? 0,
+            'title': cmd.title,
+            'begin': start.millisecondsSinceEpoch,
+            'end': finish.millisecondsSinceEpoch,
+            'allDay': false,
+            'location': location,
+            'color': 0xFF5865F2,
+          }
+        ],
+      });
+    } else if (res == 'opened') {
+      _say('I opened your calendar with "${cmd.title}" on ${stamp(start)} filled in. Tap Save.');
+    } else {
+      _say('I couldn\'t add that. Is there a calendar app on this phone?', error: true);
+    }
+  }
+
+  /// The daily brief: one message with everything that matters this morning.
+  Future<void> _brief() async {
+    setState(() => _thinking = true);
+    final now = DateTime.now();
+    final since = prefs.lastBrief > 0 && now.millisecondsSinceEpoch - prefs.lastBrief < 36 * 3600 * 1000
+        ? prefs.lastBrief
+        : now.subtract(const Duration(hours: 12)).millisecondsSinceEpoch;
+    final start = DateTime(now.year, now.month, now.day), end = start.add(const Duration(days: 1));
+
+    final weather = await Weather.fetch();
+    final evs = await Native.calPerms() ? await Native.events(start, end) : <Map>[];
+    final rems = (await Native.listSched())
+        .where((e) => e['type'] != 'brief' && ((e['at'] as num?) ?? 0) < end.millisecondsSinceEpoch)
+        .toList()
+      ..sort((a, b) => ((a['at'] as num?) ?? 0).compareTo((b['at'] as num?) ?? 0));
+    final calls = People.perms['calls'] == true
+        ? (await Native.callLog(30))
+            .where((e) => e['type'] == 'missed' && ((e['time'] as num?) ?? 0) > since)
+            .map((e) => {'name': e['name'], 'number': e['number'], 'time': e['time']})
+            .toList()
+        : <Map>[];
+    final counts = <String, int>{}, names = <String, String>{};
+    for (final m in chat.msgs) {
+      if (m.isNotif && !m.media && m.ts > since) {
+        counts[m.pkg!] = (counts[m.pkg!] ?? 0) + 1;
+        names[m.pkg!] = m.app ?? m.pkg!;
+      }
+    }
+    final apps = (counts.entries.toList()..sort((a, b) => b.value.compareTo(a.value)))
+        .take(5)
+        .map((e) => {'pkg': e.key, 'app': names[e.key], 'count': e.value})
+        .toList();
+    final dev = await Native.deviceInfo();
+    prefs.markBrief();
+    if (mounted) setState(() => _thinking = false);
+
+    const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+    const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September',
+      'October', 'November', 'December'];
+    final hi = now.hour < 12 ? 'Good morning' : now.hour < 17 ? 'Good afternoon' : 'Good evening';
+    final first = prefs.name == 'You' ? '' : ', ${prefs.name.split(' ').first}';
+    _say('$hi$first! Here\'s your day.', card: {
+      'type': 'brief',
+      'date': '${days[now.weekday - 1]}, ${now.day} ${months[now.month - 1]}',
+      if (weather != null) 'weather': weather.toCard(),
+      'calendar': prefs.lat != null || evs.isNotEmpty ? true : evs.isNotEmpty,
+      'calAccess': await Native.calPerms(),
+      'events': evs.take(6).toList(),
+      'reminders': rems.take(5).toList(),
+      'missed': calls.take(5).toList(),
+      'apps': apps,
+      'battery': dev['battery'],
+    });
+  }
+
   // ---------- Reminders & scheduled messages ----------
   /// Handles "remind me…", "my reminders", and messages/calls with a time in them. False = not for us.
   Future<bool> _schedule(String text) async {
@@ -1169,6 +1487,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
   }
 
   void _onFired(Map f) {
+    if (f['type'] == 'brief') {
+      _brief();
+      return;
+    }
     final id = f['id']?.toString() ?? '';
     _markSched(id, 'done');
     final text = (f['text'] ?? '').toString();

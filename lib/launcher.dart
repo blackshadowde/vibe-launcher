@@ -43,6 +43,25 @@ class Native {
   static Future<List<Map>> takeFired() async => await _c.invokeListMethod<Map>('takeFired') ?? [];
   static Future<void> requestPostNotif() => _c.invokeMethod('requestPostNotif');
 
+  // Calendar
+  static Future<bool> calPerms() async => await _c.invokeMethod<bool>('calPerms') ?? false;
+  static Future<void> requestCalendar() => _c.invokeMethod('requestCalendar');
+  static Future<List<Map>> events(DateTime from, DateTime to) async =>
+      await _c.invokeListMethod<Map>(
+          'events', {'from': from.millisecondsSinceEpoch, 'to': to.millisecondsSinceEpoch}) ??
+      [];
+  static Future<String> addEvent(String title, DateTime begin, DateTime end,
+          {bool allDay = false, String location = ''}) async =>
+      await _c.invokeMethod<String>('addEvent', {
+        'title': title,
+        'begin': begin.millisecondsSinceEpoch,
+        'end': end.millisecondsSinceEpoch,
+        'allDay': allDay,
+        'location': location,
+      }) ??
+      'failed';
+  static Future<void> openEvent(int id) => _c.invokeMethod('openEvent', {'id': id});
+
   static Future<Map?> takeShared() => _c.invokeMapMethod('takeShared');
   static Future<String> filesDir() async => await _c.invokeMethod<String>('filesDir') ?? '';
 
@@ -126,6 +145,11 @@ class Prefs extends ChangeNotifier {
   bool aiNotifs = true;
   bool showMedia = true;
   String messenger = 'whatsapp'; // default for "message X": whatsapp or sms
+  bool brief = false;
+  int briefHour = 7, briefMinute = 30;
+  String city = '';
+  double? lat, lon;
+  int lastBrief = 0;
   Set<String> muted = {};
   String geminiModel = '';
   Set<String> hidden = {};
@@ -142,6 +166,13 @@ class Prefs extends ChangeNotifier {
     aiNotifs = _p.getBool('aiNotifs') ?? true;
     showMedia = _p.getBool('showMedia') ?? true;
     messenger = _p.getString('messenger') ?? 'whatsapp';
+    brief = _p.getBool('brief') ?? false;
+    briefHour = _p.getInt('briefHour') ?? 7;
+    briefMinute = _p.getInt('briefMinute') ?? 30;
+    city = _p.getString('city') ?? '';
+    lat = _p.getDouble('lat');
+    lon = _p.getDouble('lon');
+    lastBrief = _p.getInt('lastBrief') ?? 0;
     muted = (_p.getStringList('muted') ?? []).toSet();
     geminiModel = _p.getString('geminiModel') ?? '';
     hidden = (_p.getStringList('hidden') ?? []).toSet();
@@ -163,6 +194,28 @@ class Prefs extends ChangeNotifier {
   void setGeminiModel(String v) { geminiModel = v.trim(); _p.setString('geminiModel', geminiModel); notifyListeners(); }
 
   void setShowNotifs(bool v) { showNotifs = v; _p.setBool('showNotifs', v); notifyListeners(); }
+  void setBrief(bool v, {int? hour, int? minute}) {
+    brief = v;
+    briefHour = hour ?? briefHour;
+    briefMinute = minute ?? briefMinute;
+    _p.setBool('brief', v);
+    _p.setInt('briefHour', briefHour);
+    _p.setInt('briefMinute', briefMinute);
+    notifyListeners();
+  }
+
+  void setCity(String name, double? la, double? lo) {
+    city = name;
+    lat = la;
+    lon = lo;
+    _p.setString('city', name);
+    la == null ? _p.remove('lat') : _p.setDouble('lat', la);
+    lo == null ? _p.remove('lon') : _p.setDouble('lon', lo);
+    notifyListeners();
+  }
+
+  void markBrief() { lastBrief = DateTime.now().millisecondsSinceEpoch; _p.setInt('lastBrief', lastBrief); }
+
   void setMessenger(String v) { messenger = v; _p.setString('messenger', v); notifyListeners(); }
   void setShowMedia(bool v) { showMedia = v; _p.setBool('showMedia', v); notifyListeners(); }
   void setAiNotifs(bool v) { aiNotifs = v; _p.setBool('aiNotifs', v); notifyListeners(); }

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'day.dart';
 import 'gemini.dart';
 import 'launcher.dart';
 import 'memory.dart';
@@ -129,6 +130,61 @@ class SettingsPage extends StatelessWidget {
               onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const _MemoryPage())),
             ),
           ]),
+          _section(c, 'DAILY BRIEF'),
+          _group(c, [
+            SwitchListTile(
+              title: Text('Daily brief', style: TextStyle(color: c.text)),
+              subtitle: Text('Weather, calendar, reminders, missed calls, messages', style: TextStyle(color: c.faint)),
+              value: prefs.brief,
+              onChanged: (v) {
+                prefs.setBrief(v);
+                if (v) Native.requestPostNotif();
+                scheduleBrief();
+              },
+            ),
+            ListTile(
+              leading: Icon(Icons.wb_sunny_outlined, color: c.muted),
+              title: Text('Time', style: TextStyle(color: c.text)),
+              subtitle: Text(
+                  TimeOfDay(hour: prefs.briefHour, minute: prefs.briefMinute).format(context),
+                  style: TextStyle(color: c.faint)),
+              onTap: () async {
+                final t = await showTimePicker(
+                    context: context, initialTime: TimeOfDay(hour: prefs.briefHour, minute: prefs.briefMinute));
+                if (t == null) return;
+                prefs.setBrief(prefs.brief, hour: t.hour, minute: t.minute);
+                scheduleBrief();
+              },
+            ),
+            ListTile(
+              leading: Icon(Icons.location_city_rounded, color: c.muted),
+              title: Text('City for weather', style: TextStyle(color: c.text)),
+              subtitle: Text(prefs.city.isEmpty ? 'Not set' : prefs.city,
+                  style: TextStyle(color: prefs.city.isEmpty ? VC.yellow : c.faint)),
+              trailing: Icon(Icons.chevron_right_rounded, color: c.faint),
+              onTap: () => _editText(context, 'Your city', prefs.city.split(',').first, (v) async {
+                if (v.trim().isEmpty) {
+                  prefs.setCity('', null, null);
+                  return;
+                }
+                final g = await Weather.geocode(v);
+                if (g != null) prefs.setCity(g.$1, g.$2, g.$3);
+              }, hint: 'e.g. Mumbai'),
+            ),
+            FutureBuilder<bool>(
+              future: Native.calPerms(),
+              builder: (_, snap) => ListTile(
+                leading: Icon(Icons.calendar_month_rounded, color: c.muted),
+                title: Text('Calendar access', style: TextStyle(color: c.text)),
+                subtitle: Text(snap.data == true ? 'Allowed' : 'Not allowed: tap to allow',
+                    style: TextStyle(color: snap.data == true ? VC.green : VC.yellow)),
+                onTap: () async {
+                  await Native.requestCalendar();
+                  prefs.refresh();
+                },
+              ),
+            ),
+          ]),
           _section(c, 'VIBE AI (GEMINI)'),
           _group(c, [
             ListTile(
@@ -206,7 +262,7 @@ class SettingsPage extends StatelessWidget {
             ListTile(
               leading: Icon(Icons.info_outline_rounded, color: c.muted),
               title: Text('Vibe Launcher', style: TextStyle(color: c.text)),
-              subtitle: Text('Version 0.11.0', style: TextStyle(color: c.faint)),
+              subtitle: Text('Version 0.12.0', style: TextStyle(color: c.faint)),
             ),
           ]),
         ]),

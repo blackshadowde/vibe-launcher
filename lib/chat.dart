@@ -155,6 +155,8 @@ class Brain {
       '• "call mom", "message Ravi I\'ll be late", "whatsapp Priya hi", "who called me?"\n'
       '• "remember my brother is Ravi", "what do you remember", "forget …"\n'
       '• "remind me at 6pm to call mom", "remind me in 20 minutes", "message Ravi happy birthday at 12 tonight", "my reminders"\n'
+      '• "good morning" or "my day" for your daily brief, "weather", "my city is Mumbai"\n'
+      '• "what\'s on today?", "add dentist on friday at 5"\n'
       '• Tap + for Camera or Photos and ask about a picture, or share anything to Vibe from any app\n'
       '• Long-press my avatar for your recent apps\n'
       'Notifications show up here: tap Reply to answer, long-press to mute an app.\n'

@@ -61,6 +61,17 @@ class Gemini {
             },
             ['name']),
         _fn('recent_calls', 'Show recent and missed phone calls.', {}, []),
+        _fn('daily_brief', 'Show the user\'s daily brief: weather, calendar, reminders, missed calls, messages.', {}, []),
+        _fn('weather', 'Show the weather for the user\'s saved city (only if they haven\'t named another place).',
+            {'day': {'type': 'string', 'enum': ['today', 'tomorrow']}}, ['day']),
+        _fn('list_events', 'Show calendar events for a day.',
+            {'date': _s('Local date in ISO 8601, e.g. 2026-10-11')}, ['date']),
+        _fn('add_event', 'Add an event to the phone\'s calendar.', {
+          'title': _s('Event title'),
+          'start': _s('Local start date-time, ISO 8601 without timezone'),
+          'end': _s('Optional local end date-time, ISO 8601'),
+          'location': _s('Optional place'),
+        }, ['title', 'start']),
         _fn('set_reminder', 'Set a reminder that pings the user at a time.', {
           'text': _s('What to remind about, short, e.g. "Call mom"'),
           'time': _s('Local date-time in ISO 8601 without timezone, e.g. 2026-10-10T18:00:00'),
