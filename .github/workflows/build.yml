@@ -1,0 +1,45 @@
+name: Launcher build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      # Generates the Android project files we don't keep in the repo
+      - name: Create Android project
+        run: |
+          flutter create --platforms android --org com.vibe --project-name vibe_launcher .
+          rm -rf test
+          cp android_overrides/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
+          rm -rf android/app/src/main/kotlin
+          mkdir -p android/app/src/main/kotlin/com/vibe/vibe_launcher
+          cp android_overrides/kotlin/MainActivity.kt android/app/src/main/kotlin/com/vibe/vibe_launcher/
+
+      - run: flutter pub get
+
+      - name: Check code
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings lib
+
+      - name: Build APK
+        run: flutter build apk --debug
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vibe-launcher-debug
+          path: build/app/outputs/flutter-apk/app-debug.apk
