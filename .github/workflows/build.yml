@@ -47,6 +47,13 @@ jobs:
               implementation("com.google.mlkit:genai-prompt:1.0.0-beta4")
               implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
           }
+
+          // 64-bit ARM phones only (all modern phones): keeps the Telegram library from tripling the APK size
+          android {
+              defaultConfig {
+                  ndk { abiFilters += listOf("arm64-v8a") }
+              }
+          }
           GRADLE
           grep -n "minSdk" "$F" || true
 
@@ -93,7 +100,7 @@ jobs:
           grep -q 'getByName("vibe")\|signingConfigs.vibe' "$F" || { echo "::error::Couldn't switch the release build to your key"; exit 1; }
 
       - name: Build APK
-        run: flutter build apk --release
+        run: flutter build apk --release --target-platform android-arm64
 
       # Proves the APK carries your key, not the debug one
       - name: Check signature
