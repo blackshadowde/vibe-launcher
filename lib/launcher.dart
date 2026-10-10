@@ -30,6 +30,8 @@ class Native {
   static Future<List<Map>> drainNotifs() async => await _c.invokeListMethod<Map>('drainNotifs') ?? [];
   static Future<bool> replyNotif(String key, String text) async =>
       await _c.invokeMethod<bool>('replyNotif', {'key': key, 'text': text}) ?? false;
+  static Future<bool> mediaControl(String? pkg, String action) async =>
+      await _c.invokeMethod<bool>('mediaControl', {'package': pkg, 'action': action}) ?? false;
   static Future<bool> openNotif(String key) async =>
       await _c.invokeMethod<bool>('openNotif', {'key': key}) ?? false;
 
@@ -92,6 +94,7 @@ class Prefs extends ChangeNotifier {
   String geminiKey = '';
   bool showNotifs = true;
   bool aiNotifs = true;
+  bool showMedia = true;
   Set<String> muted = {};
   String geminiModel = '';
   Set<String> hidden = {};
@@ -106,6 +109,7 @@ class Prefs extends ChangeNotifier {
     geminiKey = _p.getString('geminiKey') ?? '';
     showNotifs = _p.getBool('showNotifs') ?? true;
     aiNotifs = _p.getBool('aiNotifs') ?? true;
+    showMedia = _p.getBool('showMedia') ?? true;
     muted = (_p.getStringList('muted') ?? []).toSet();
     geminiModel = _p.getString('geminiModel') ?? '';
     hidden = (_p.getStringList('hidden') ?? []).toSet();
@@ -127,6 +131,7 @@ class Prefs extends ChangeNotifier {
   void setGeminiModel(String v) { geminiModel = v.trim(); _p.setString('geminiModel', geminiModel); notifyListeners(); }
 
   void setShowNotifs(bool v) { showNotifs = v; _p.setBool('showNotifs', v); notifyListeners(); }
+  void setShowMedia(bool v) { showMedia = v; _p.setBool('showMedia', v); notifyListeners(); }
   void setAiNotifs(bool v) { aiNotifs = v; _p.setBool('aiNotifs', v); notifyListeners(); }
   void toggleMuted(String pkg) {
     muted.contains(pkg) ? muted.remove(pkg) : muted.add(pkg);

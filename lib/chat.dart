@@ -17,8 +17,9 @@ class Msg {
   final String? title; // e.g. sender name
   final String? nkey; // Android notification key, for reply/open
   final bool canReply;
-  // Your reply to a notification: "Ravi · WhatsApp"
+  // Your reply to a notification ("Ravi · WhatsApp"), or the previous song for a song change
   final String? quote;
+  final bool media; // music update from a player app
 
   Msg(this.me, this.text,
       {int? ts,
@@ -30,7 +31,8 @@ class Msg {
       this.title,
       this.nkey,
       this.canReply = false,
-      this.quote})
+      this.quote,
+      this.media = false})
       : ts = ts ?? DateTime.now().millisecondsSinceEpoch;
 
   bool get isNotif => pkg != null;
@@ -49,6 +51,7 @@ class Msg {
         if (nkey != null) 'k': nkey,
         if (canReply) 'r': true,
         if (quote != null) 'q': quote,
+        if (media) 'md': true,
       };
   static Msg fromJson(Map j) => Msg(j['m'] == true, j['t'] ?? '',
       ts: j['s'] ?? 0,
@@ -60,7 +63,8 @@ class Msg {
       title: j['h'],
       nkey: j['k'],
       canReply: j['r'] == true,
-      quote: j['q']);
+      quote: j['q'],
+      media: j['md'] == true);
 }
 
 /// Chat history, kept on the phone (last 500 lines).
@@ -81,6 +85,14 @@ class ChatStore extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Swap the newest line (used to collapse quick play/pause toggles into one message).
+  void replaceLast(Msg m) {
+    if (msgs.isEmpty) return add(m);
+    msgs[msgs.length - 1] = m;
+    prefs.sp.setString('chat', jsonEncode(msgs.map((e) => e.toJson()).toList()));
+    notifyListeners();
+  }
+
   void clear() {
     msgs = [];
     prefs.sp.remove('chat');
@@ -91,7 +103,7 @@ class ChatStore extends ChangeNotifier {
 final chat = ChatStore();
 
 /// What Vibe decided to do with a message.
-enum Act { none, open, drawer, phoneSettings, launcherSettings, clear }
+enum Act { none, open, drawer, phoneSettings, launcherSettings, clear, media }
 
 class Reply {
   final String text;
@@ -100,7 +112,9 @@ class Reply {
   final List<AppEntry> choices;
   /// false = the offline brain didn't really understand; let Gemini try.
   final bool sure;
-  Reply(this.text, {this.act = Act.none, this.app, this.choices = const [], this.sure = true});
+  final String media; // play / pause / next / previous
+  Reply(this.text,
+      {this.act = Act.none, this.app, this.choices = const [], this.sure = true, this.media = ''});
 }
 
 /// Offline command understanding. Gemini comes later for anything this can't handle.
@@ -111,6 +125,7 @@ class Brain {
       '• "settings" for phone settings\n'
       '• "launcher settings"\n'
       '• "clear chat"\n'
+      '• "pause", "play", "next", "previous" for music\n'
       '• Long-press my avatar for your recent apps\n'
       'Notifications show up here: tap Reply to answer, long-press to mute an app.\n'
       'With a Gemini key (launcher settings) you can also just talk to me: ask questions, '
@@ -136,6 +151,19 @@ class Brain {
     if (const {'help', 'what can you do', 'commands', '?'}.contains(q)) return Reply(help);
     if (const {'clear', 'clear chat', 'delete chat', 'clear all'}.contains(q)) {
       return Reply('', act: Act.clear);
+    }
+    // Music controls, offline
+    if (RegExp(r'^(pause|stop)( (the )?(music|song|it))?$').hasMatch(q)) {
+      return Reply('Pausing…', act: Act.media, media: 'pause');
+    }
+    if (RegExp(r'^(resume|continue|play|unpause)( (the )?(music|song|it))?$').hasMatch(q)) {
+      return Reply('Playing…', act: Act.media, media: 'play');
+    }
+    if (RegExp(r'^(next|skip)( (the )?(song|track|one))?$|^next song$|^play next$').hasMatch(q)) {
+      return Reply('Next song…', act: Act.media, media: 'next');
+    }
+    if (RegExp(r'^(previous|prev|last|back)( (song|track|one))?$|^play previous$|^go back$').hasMatch(q)) {
+      return Reply('Previous song…', act: Act.media, media: 'previous');
     }
     if (RegExp(r'^(open |show )?(all )?(apps|app list|applications|app drawer|drawer)$').hasMatch(q)) {
       return Reply('Here are all your apps.', act: Act.drawer);

@@ -157,6 +157,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         Native.openSettings();
       case Act.launcherSettings:
         _openLauncherSettings();
+      case Act.media:
+        if (!await Native.mediaControl(null, r.media)) {
+          _say('Nothing is playing right now, or notification access is off.');
+        }
       default:
         break;
     }
@@ -283,6 +287,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         _say(say('Opening it…'));
         await _pause();
         _openNotif(n);
+      case 'media_control':
+        final action = str('action');
+        if (preface.isNotEmpty) _say(preface);
+        if (!await Native.mediaControl(null, action.isEmpty ? 'toggle' : action)) {
+          _say('Nothing is playing right now, or notification access is off.');
+        }
       case 'clear_chat':
         chat.clear();
         _say('Chat cleared.');
@@ -495,23 +505,26 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             Icon(Icons.reply_rounded, size: 14, color: c.faint),
             const SizedBox(width: 4),
             Flexible(
-              child: Text('Replied to ${m.quote}',
+              child: Text(m.me ? 'Replied to ${m.quote}' : m.quote!,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(color: c.faint, fontSize: 12, fontWeight: FontWeight.w600)),
             ),
           ]),
         ),
-      if (m.isNotif && (m.title ?? '').isNotEmpty)
+      if (m.isNotif && !m.media && (m.title ?? '').isNotEmpty)
         Text(m.title!, style: TextStyle(color: c.text, fontSize: 15, fontWeight: FontWeight.w700)),
       if (m.text.isNotEmpty)
-        m.isNotif
+        m.media
+            ? Text(m.text, style: TextStyle(color: c.text, fontSize: 15, height: 1.35, fontWeight: FontWeight.w600))
+            : m.isNotif
             ? Text(m.text, style: TextStyle(color: c.muted, fontSize: 15, height: 1.35))
             : richText(m.text, c, error: m.error),
       if (m.links.isNotEmpty) linkChips(m.links, c),
       for (final p in m.apps)
         if (_byPkg(p) case final a?)
           AppCard(app: a, onOpen: () => _launch(a), onLongPress: () => showAppMenu(context, a, () => _launch(a))),
-      if (m.isNotif) _notifActions(c, m),
+      if (m.isNotif && !m.media) _notifActions(c, m),
+      if (m.media) _mediaActions(c, m),
     ];
     Widget content = Column(crossAxisAlignment: CrossAxisAlignment.start, children: body);
     if (m.isNotif) {
@@ -606,6 +619,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   void _onNotif(Map n) {
     final pkg = n['pkg']?.toString();
     if (pkg == null || !prefs.showNotifs || prefs.muted.contains(pkg)) return;
+    if (n['type'] == 'media') return _onMedia(n, pkg);
     final atBottom = !_scroll.hasClients || _scroll.offset < 80;
     chat.add(Msg(false, (n['text'] ?? '').toString(),
         ts: (n['time'] as num?)?.toInt(),
@@ -615,6 +629,61 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         nkey: n['key']?.toString(),
         canReply: n['canReply'] == true));
     if (atBottom) _toBottom();
+  }
+
+  /// Music app "talks": ▶ Playing X, ⏸ Paused X, and song changes quote the previous song.
+  void _onMedia(Map n, String pkg) {
+    if (!prefs.showMedia) return;
+    final title = (n['title'] ?? '').toString();
+    final artist = (n['artist'] ?? '').toString();
+    final prev = (n['prev'] ?? '').toString();
+    final event = n['event'];
+    final song = '"$title"${artist.isEmpty ? '' : ' · $artist'}';
+    final text = event == 'pause' ? '⏸ Paused $song' : '▶ Playing $song';
+    final m = Msg(false, text,
+        ts: (n['time'] as num?)?.toInt(),
+        pkg: pkg,
+        app: n['app']?.toString(),
+        media: true,
+        quote: event == 'track' && prev.isNotEmpty ? '▶ "$prev"' : null);
+
+    // Quick play/pause toggles of the same song just update the last message instead of piling up
+    final last = chat.msgs.isNotEmpty ? chat.msgs.last : null;
+    final sameSong = last != null &&
+        last.media &&
+        last.pkg == pkg &&
+        last.text.contains('"$title"') &&
+        m.ts - last.ts < 2 * 60 * 1000;
+    final atBottom = !_scroll.hasClients || _scroll.offset < 80;
+    if (sameSong && event != 'track') {
+      chat.replaceLast(Msg(false, text, ts: m.ts, pkg: pkg, app: m.app, media: true, quote: last.quote));
+    } else {
+      chat.add(m);
+    }
+    if (atBottom) _toBottom();
+  }
+
+  Widget _mediaActions(VC c, Msg m) {
+    Widget btn(IconData i, String action) => InkWell(
+          customBorder: const CircleBorder(),
+          onTap: () {
+            prefs.tap();
+            Native.mediaControl(m.pkg, action);
+          },
+          child: Padding(padding: const EdgeInsets.all(6), child: Icon(i, size: 24, color: c.text)),
+        );
+    return Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: Container(
+        decoration: BoxDecoration(color: c.pane, borderRadius: BorderRadius.circular(20)),
+        padding: const EdgeInsets.symmetric(horizontal: 4),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          btn(Icons.skip_previous_rounded, 'previous'),
+          btn(m.text.startsWith('⏸') ? Icons.play_arrow_rounded : Icons.pause_rounded, 'toggle'),
+          btn(Icons.skip_next_rounded, 'next'),
+        ]),
+      ),
+    );
   }
 
   Future<void> _openNotif(Msg m) async {
@@ -678,7 +747,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   List<Msg> get _ctxNotifs {
     if (!prefs.aiNotifs) return [];
     final since = DateTime.now().subtract(const Duration(hours: 24)).millisecondsSinceEpoch;
-    return chat.msgs.reversed.where((m) => m.isNotif && m.ts > since).take(25).toList();
+    return chat.msgs.reversed.where((m) => m.isNotif && !m.media && m.ts > since).take(25).toList();
   }
 
   // ---------- long-press Vibe's avatar: recent apps pane ----------

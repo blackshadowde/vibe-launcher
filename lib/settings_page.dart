@@ -64,6 +64,13 @@ class SettingsPage extends StatelessWidget {
               onChanged: prefs.setShowNotifs,
             ),
             SwitchListTile(
+              title: Text('Music updates', style: TextStyle(color: c.text)),
+              subtitle: Text('"Playing…", "Paused…" and song changes, with controls',
+                  style: TextStyle(color: c.faint)),
+              value: prefs.showMedia,
+              onChanged: prefs.setShowMedia,
+            ),
+            SwitchListTile(
               title: Text('Let Vibe AI read them', style: TextStyle(color: c.text)),
               subtitle: Text('For "what did I miss?" and replies. Sends recent notifications to Gemini',
                   style: TextStyle(color: c.faint)),
@@ -133,7 +140,7 @@ class SettingsPage extends StatelessWidget {
             ListTile(
               leading: Icon(Icons.info_outline_rounded, color: c.muted),
               title: Text('Vibe Launcher', style: TextStyle(color: c.text)),
-              subtitle: Text('Version 0.4.0', style: TextStyle(color: c.faint)),
+              subtitle: Text('Version 0.5.0', style: TextStyle(color: c.faint)),
             ),
           ]),
         ]),

@@ -48,6 +48,9 @@ class Gemini {
           'label': _s('Optional label'),
         }, ['seconds']),
         _fn('clear_chat', 'Delete the chat history with Vibe.', {}, []),
+        _fn('media_control', 'Control the music that is playing (or was last playing).', {
+          'action': {'type': 'string', 'enum': ['play', 'pause', 'next', 'previous']},
+        }, ['action']),
         _fn('reply_notification',
             'Reply to a chat notification listed in the context (WhatsApp, Telegram, SMS…). '
                 'Only for notifications marked [can reply].',
@@ -78,7 +81,17 @@ class Gemini {
         'Current local time: ${now.toIso8601String()} (${_weekday(now.weekday)}). '
         'User\'s name: ${prefs.name}. '
         'Installed apps: ${names.join(', ')}.'
+        '${_music(notifs)}'
         '${_notifBlock(notifs)}';
+  }
+
+  static String _music(List<Msg> recent) {
+    for (final m in chat.msgs.reversed) {
+      if (m.media) {
+        return '\nMusic: latest update from ${m.app} at ${stamp(DateTime.fromMillisecondsSinceEpoch(m.ts))}: ${m.text}.';
+      }
+    }
+    return '';
   }
 
   /// Recent notifications, numbered so Gemini can refer to them (n1 = newest).
