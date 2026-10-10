@@ -966,6 +966,8 @@ class VibeNotifService : NotificationListenerService() {
     private val controllers = HashMap<String, Pair<MediaController, MediaController.Callback>>()
     private val mediaLast = HashMap<String, Pair<String, Int>>() // package -> (title, 1 playing / 2 paused)
     private val mediaTimers = HashMap<String, Runnable>()
+    private val mediaKeys = HashMap<String, String>()
+    private val mediaChangedAt = HashMap<String, Long>()
 
     private val sessionsListener = MediaSessionManager.OnActiveSessionsChangedListener { list ->
         main.post { syncSessions(list ?: emptyList(), false) }
@@ -1048,19 +1050,23 @@ class VibeNotifService : NotificationListenerService() {
             else -> 1
         }
         val (lastT, lastSt) = mediaLast[pkg] ?: ("" to 0)
+        val now = System.currentTimeMillis()
+        // Titles changing every few seconds = lyrics, not new songs
+        val tt = if (lastT.isNotEmpty() && t != lastT && now - (mediaChangedAt[pkg] ?: 0L) < 15000) lastT else t
         val event = when {
-            t != lastT && st == 1 -> if (lastT.isEmpty()) "play" else "track"
-            t == lastT && st != lastSt -> if (st == 1) "play" else "pause"
+            tt != lastT && st == 1 -> if (lastT.isEmpty()) "play" else "track"
+            tt == lastT && st != lastSt -> if (st == 1) "play" else "pause"
             else -> null
         }
-        mediaLast[pkg] = t to st
+        if (tt != lastT) mediaChangedAt[pkg] = now
+        mediaLast[pkg] = tt to st
         if (event == null) return
         val label = try {
             packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0)).toString()
         } catch (e: Exception) { pkg }
         emit(mapOf(
             "type" to "media", "event" to event, "pkg" to pkg, "app" to label,
-            "title" to t, "artist" to artist, "prev" to lastT,
+            "title" to tt, "artist" to artist.take(120), "prev" to lastT,
             "time" to System.currentTimeMillis(), "initial" to false
         ))
     }
@@ -1100,17 +1106,35 @@ class VibeNotifService : NotificationListenerService() {
         main.postDelayed(r, 450)
     }
 
+    /** Identity of the song itself, so lyric lines shown in the title don't count as new songs. */
+    private fun songKey(c: MediaController): String {
+        val m = c.metadata ?: return ""
+        val id = m.getString(MediaMetadata.METADATA_KEY_MEDIA_ID) ?: ""
+        if (id.isNotBlank()) return "id:$id"
+        val dur = m.getLong(MediaMetadata.METADATA_KEY_DURATION)
+        val album = m.getString(MediaMetadata.METADATA_KEY_ALBUM) ?: ""
+        return if (dur > 0 || album.isNotBlank()) "s:$album|$dur" else ""
+    }
+
     private fun announce(c: MediaController, initial: Boolean = false) {
         val pkg = c.packageName
-        val t = title(c)
+        var t = title(c)
         val st = state(c)
         if (t.isEmpty() || st == 0) return
         val (lastT, lastSt) = mediaLast[pkg] ?: ("" to 0)
+        val key = songKey(c)
+        val now = System.currentTimeMillis()
+        // Same song with a different title = a lyric line (or a small edit): keep the first title
+        val sameSong = lastT.isNotEmpty() && t != lastT &&
+            (if (key.isNotEmpty() && !mediaKeys[pkg].isNullOrEmpty()) key == mediaKeys[pkg]
+             else now - (mediaChangedAt[pkg] ?: 0L) < 15000)
+        if (sameSong) t = lastT
         val event = when {
             t != lastT && st == 1 -> if (lastT.isEmpty()) "play" else "track"
             t == lastT && st != lastSt -> if (st == 1) "play" else "pause"
             else -> null
         }
+        if (t != lastT) { mediaKeys[pkg] = key; mediaChangedAt[pkg] = now }
         mediaLast[pkg] = t to st
         if (event == null) return
         val label = try {
