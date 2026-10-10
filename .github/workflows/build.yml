@@ -55,23 +55,54 @@ jobs:
       - name: Check code
         run: flutter analyze --no-fatal-infos --no-fatal-warnings lib
 
-      - name: Build APK
-        run: flutter build apk --release
-
-      # Signs with your own key when the two repository secrets exist; otherwise keeps the default signature
-      - name: Sign with your key
+      # Release signing with your own key (repository secrets). Without them the build stops here,
+      # so you never get an APK signed with the throwaway debug key by mistake.
+      - name: Set up release signing
         env:
           KS: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
         run: |
-          if [ -z "$KS" ]; then echo "No signing key secrets set, keeping the default signature"; exit 0; fi
-          echo "$KS" | base64 -d > ks.jks
+          if [ -z "$KS" ] || [ -z "$KS_PASS" ]; then
+            echo "::error::Signing secrets missing. Add ANDROID_KEYSTORE_BASE64 and ANDROID_KEYSTORE_PASSWORD in Settings > Secrets and variables > Actions (Repository secrets)."
+            exit 1
+          fi
+          PASS=$(printf %s "$KS_PASS" | tr -d '\r\n')
+          printf %s "$KS" | tr -d ' \r\n' | base64 -d > "$RUNNER_TEMP/vibe.jks"
+          if ! keytool -list -keystore "$RUNNER_TEMP/vibe.jks" -storepass "$PASS" >/dev/null 2>&1; then
+            echo "::error::The keystore or its password is wrong. Re-paste both secrets from the key zip (whole text, nothing extra)."
+            exit 1
+          fi
+          ALIAS=$(keytool -list -keystore "$RUNNER_TEMP/vibe.jks" -storepass "$PASS" | grep -m1 PrivateKeyEntry | cut -d, -f1)
+          keytool -list -keystore "$RUNNER_TEMP/vibe.jks" -storepass "$PASS" | grep SHA-256
+          {
+            echo "VIBE_KS=$RUNNER_TEMP/vibe.jks"
+            echo "VIBE_KS_ALIAS=$ALIAS"
+          } >> "$GITHUB_ENV"
+          echo "::add-mask::$PASS"
+          echo "VIBE_KS_PASS=$PASS" >> "$GITHUB_ENV"
+          F=android/app/build.gradle.kts
+          if [ -f "$F" ]; then
+            sed -i 's/signingConfig = signingConfigs.getByName("debug")/signingConfig = signingConfigs.getByName("vibe")/' "$F"
+            sed -i '0,/^    buildTypes {/s//    signingConfigs {\n        create("vibe") {\n            storeFile = file(System.getenv("VIBE_KS"))\n            storePassword = System.getenv("VIBE_KS_PASS")\n            keyAlias = System.getenv("VIBE_KS_ALIAS")\n            keyPassword = System.getenv("VIBE_KS_PASS")\n        }\n    }\n    buildTypes {/' "$F"
+          else
+            F=android/app/build.gradle
+            sed -i "s/signingConfig signingConfigs.debug/signingConfig signingConfigs.vibe/" "$F"
+            sed -i '0,/^    buildTypes {/s//    signingConfigs {\n        vibe {\n            storeFile file(System.getenv("VIBE_KS"))\n            storePassword System.getenv("VIBE_KS_PASS")\n            keyAlias System.getenv("VIBE_KS_ALIAS")\n            keyPassword System.getenv("VIBE_KS_PASS")\n        }\n    }\n    buildTypes {/' "$F"
+          fi
+          grep -n -A8 "signingConfigs {" "$F"
+          grep -q 'getByName("vibe")\|signingConfigs.vibe' "$F" || { echo "::error::Couldn't switch the release build to your key"; exit 1; }
+
+      - name: Build APK
+        run: flutter build apk --release
+
+      # Proves the APK carries your key, not the debug one
+      - name: Check signature
+        run: |
           BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
-          "$BT/apksigner" sign --ks ks.jks --ks-pass env:KS_PASS --key-pass env:KS_PASS \
-            --out build/app/outputs/flutter-apk/signed.apk build/app/outputs/flutter-apk/app-release.apk
-          mv build/app/outputs/flutter-apk/signed.apk build/app/outputs/flutter-apk/app-release.apk
-          rm ks.jks
-          "$BT/apksigner" verify --print-certs build/app/outputs/flutter-apk/app-release.apk
+          OUT=$("$BT/apksigner" verify --print-certs build/app/outputs/flutter-apk/app-release.apk)
+          echo "$OUT"
+          if echo "$OUT" | grep -q "Android Debug"; then echo "::error::APK is still signed with the debug key"; exit 1; fi
+          rm -f "$RUNNER_TEMP/vibe.jks"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -84,9 +115,7 @@ jobs:
         if: ${{ github.ref == 'refs/heads/main' }}
         env:
           GH_TOKEN: ${{ github.token }}
-          KS: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: |
-          if [ -z "$KS" ]; then echo "Not signed with your key, skipping the release"; exit 0; fi
           V=$(grep -m1 '^version:' pubspec.yaml | sed 's/version: *//; s/+.*//')
           APK="vibe-launcher-v$V.apk"
           cp build/app/outputs/flutter-apk/app-release.apk "$APK"
