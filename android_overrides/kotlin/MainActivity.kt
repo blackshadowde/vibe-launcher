@@ -129,6 +129,26 @@ class MainActivity : FlutterActivity() {
                     val target = call.argument<String>("package")
                     result.success((target != null && open(Intent(i).setPackage(target))) || open(i))
                 }
+                // ---------- Pictures: save, share, set as wallpaper ----------
+                "saveToGallery" -> Thread {
+                    val uri = try { saveToGallery(call.argument<String>("path") ?: "") } catch (e: Exception) { null }
+                    runOnUiThread { result.success(uri) }
+                }.start()
+                "shareImage" -> {
+                    val i = Intent(Intent.ACTION_SEND).setType("image/jpeg")
+                        .putExtra(Intent.EXTRA_STREAM, Uri.parse(call.argument<String>("uri") ?: ""))
+                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    result.success(open(Intent.createChooser(i, "Share picture")))
+                }
+                "setWallpaper" -> Thread {
+                    val ok = try {
+                        val bmp = BitmapFactory.decodeFile(call.argument<String>("path") ?: "")
+                        val which = if (call.argument<Boolean>("lock") == true) android.app.WallpaperManager.FLAG_LOCK
+                            else android.app.WallpaperManager.FLAG_SYSTEM or android.app.WallpaperManager.FLAG_LOCK
+                        android.app.WallpaperManager.getInstance(this).setBitmap(bmp, null, true, which); true
+                    } catch (e: Exception) { false }
+                    runOnUiThread { result.success(ok) }
+                }.start()
                 "openSettingsPage" -> result.success(
                     open(Intent(call.argument<String>("action") ?: Settings.ACTION_SETTINGS)) ||
                         open(Intent(Settings.ACTION_SETTINGS))
@@ -667,6 +687,28 @@ class MainActivity : FlutterActivity() {
             }
         }
         return out
+    }
+
+    /** Copies a picture into Pictures/Vibe so it shows in Gallery; returns its content:// address. */
+    private fun saveToGallery(path: String): String? {
+        val f = java.io.File(path)
+        if (!f.exists()) return null
+        val v = android.content.ContentValues().apply {
+            put(android.provider.MediaStore.Images.Media.DISPLAY_NAME, "Vibe_${System.currentTimeMillis()}.jpg")
+            put(android.provider.MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+            if (Build.VERSION.SDK_INT >= 29) {
+                put(android.provider.MediaStore.Images.Media.RELATIVE_PATH, "Pictures/Vibe")
+                put(android.provider.MediaStore.Images.Media.IS_PENDING, 1)
+            }
+        }
+        val uri = contentResolver.insert(android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, v) ?: return null
+        contentResolver.openOutputStream(uri)?.use { out -> f.inputStream().use { it.copyTo(out) } }
+        if (Build.VERSION.SDK_INT >= 29) {
+            contentResolver.update(uri, android.content.ContentValues().apply {
+                put(android.provider.MediaStore.Images.Media.IS_PENDING, 0)
+            }, null, null)
+        }
+        return uri.toString()
     }
 
     private fun has(p: String) = checkSelfPermission(p) == PackageManager.PERMISSION_GRANTED
