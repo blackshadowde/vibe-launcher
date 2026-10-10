@@ -1,0 +1,6 @@
+build/
+.dart_tool/
+android/
+ios/
+.flutter-plugins*
+pubspec.lock
