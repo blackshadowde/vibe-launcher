@@ -124,8 +124,14 @@ class MainActivity : FlutterActivity() {
                 )
                 "isDefaultLauncher" -> result.success(isDefaultLauncher())
                 "deviceInfo" -> result.success(deviceInfo())
-                "openUrl" -> result.success(
-                    open(Intent(Intent.ACTION_VIEW, Uri.parse(call.argument<String>("url") ?: "")))
+                "openUrl" -> {
+                    val i = Intent(Intent.ACTION_VIEW, Uri.parse(call.argument<String>("url") ?: ""))
+                    val target = call.argument<String>("package")
+                    result.success((target != null && open(Intent(i).setPackage(target))) || open(i))
+                }
+                "openSettingsPage" -> result.success(
+                    open(Intent(call.argument<String>("action") ?: Settings.ACTION_SETTINGS)) ||
+                        open(Intent(Settings.ACTION_SETTINGS))
                 )
                 "playMusic" -> {
                     val q = call.argument<String>("query") ?: ""
