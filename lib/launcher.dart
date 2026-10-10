@@ -62,6 +62,12 @@ class Native {
   static Future<void> requestSms() => _c.invokeMethod('requestSms');
   static Future<void> requestFiles() => _c.invokeMethod('requestFiles');
 
+  // Pictures
+  static Future<String?> saveToGallery(String path) => _c.invokeMethod<String>('saveToGallery', {'path': path});
+  static Future<void> shareImage(String uri) => _c.invokeMethod('shareImage', {'uri': uri});
+  static Future<bool> setWallpaper(String path, {bool lockOnly = false}) async =>
+      await _c.invokeMethod<bool>('setWallpaper', {'path': path, 'lock': lockOnly}) ?? false;
+
   // Backup & restore through Android's file picker
   static Future<bool> saveDoc(String name, String text) async =>
       await _c.invokeMethod<bool>('saveDoc', {'name': name, 'text': text}) ?? false;
@@ -194,6 +200,9 @@ class Prefs extends ChangeNotifier {
   // Gmail (optional, IMAP with an app password)
   String gmailUser = '';
   String gmailPass = '';
+  // Pictures (Cloudflare Workers AI, free daily quota)
+  String cfAccount = '';
+  String cfToken = '';
   List<int> queue = []; // timestamps of your questions waiting for internet
   int briefHour = 7, briefMinute = 30;
   String city = '';
@@ -241,6 +250,10 @@ class Prefs extends ChangeNotifier {
     iconPack = _p.getString('iconPack') ?? '';
     roundIcons = _p.getBool('roundIcons') ?? true;
     gmailUser = _p.getString('gmailUser') ?? '';
+    cfAccount = _p.getString('cfAccount') ?? '';
+    try {
+      cfToken = await _vault.read(key: 'cfToken') ?? '';
+    } catch (_) {}
     try {
       gmailPass = await _vault.read(key: 'gmailPass') ?? '';
     } catch (_) {}
@@ -296,6 +309,14 @@ class Prefs extends ChangeNotifier {
   void setCompact(bool v) { compact = v; _p.setBool('compact', v); notifyListeners(); }
   void setIconPack(String v) { iconPack = v; _p.setString('iconPack', v); notifyListeners(); }
   void setRoundIcons(bool v) { roundIcons = v; _p.setBool('roundIcons', v); notifyListeners(); }
+  void setCloudflare(String account, String token) {
+    cfAccount = account.trim();
+    cfToken = token.trim();
+    _p.setString('cfAccount', cfAccount);
+    _vault.write(key: 'cfToken', value: cfToken).catchError((_) {});
+    notifyListeners();
+  }
+
   void setGmail(String user, String pass) {
     gmailUser = user.trim();
     gmailPass = pass.replaceAll(' ', '').trim();

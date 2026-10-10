@@ -168,6 +168,7 @@ class Brain {
       '• "offline mode on" to use no internet; questions get answered when you\'re back online\n'
       '• "ps whatsapp" (Play Store), "gg cricket score" (Google), "yt lofi" (YouTube), "maps petrol pump", "navigate to airport", "wifi", "battery settings"\n'
       '• Start typing and matching apps, people, messages and files pop up above the box\n'
+      '• "draw a cat astronaut", "make a wallpaper of a misty forest", then "set it as wallpaper"\n'
       '• Tap + for Camera or Photos and ask about a picture, or share anything to Vibe from any app\n'
       '• Long-press my avatar for your recent apps\n'
       'Notifications show up here: tap Reply to answer, long-press to mute an app.\n'

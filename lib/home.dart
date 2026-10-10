@@ -9,6 +9,7 @@ import 'launcher.dart';
 import 'main.dart';
 import 'memory.dart';
 import 'people.dart';
+import 'imagegen.dart';
 import 'search.dart';
 import 'privacy.dart';
 import 'day.dart';
@@ -36,6 +37,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
   bool _isDefault = true;
   bool _loaded = false;
   bool _thinking = false;
+  bool _drawing = false;
   bool _online = true;
   String _nano = 'unknown'; // on-phone AI: available / downloadable / downloading / unavailable
   bool get _netOk => _online && !prefs.offlineMode;
@@ -186,6 +188,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     chat.add(Msg(true, text));
     _toBottom();
 
+    // Pictures: "draw …", "create an image of …", "set it as wallpaper"
+    final ig = ImageGen.parse(text);
+    if (ig != null) {
+      await _draw(ig.prompt, wallpaper: ig.wallpaper);
+      return;
+    }
+    if (await _wallpaperCommand(text)) return;
     final mem = memory.handle(text);
     if (mem != null) {
       await Future.delayed(const Duration(milliseconds: 250));
@@ -213,8 +222,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
   }
 
   void _say(String text,
-      {List<String> apps = const [], List<Map> links = const [], bool error = false, Map? card, bool local = false}) {
-    chat.add(Msg(false, text, apps: apps, links: links, error: error, card: card, local: local));
+      {List<String> apps = const [],
+      List<Map> links = const [],
+      bool error = false,
+      Map? card,
+      bool local = false,
+      String? img}) {
+    chat.add(Msg(false, text, apps: apps, links: links, error: error, card: card, local: local, img: img));
     _toBottom();
   }
 
@@ -469,6 +483,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
               title: str('title'), at: start),
               end: DateTime.tryParse(str('end')), location: str('location'));
         }
+      case 'generate_image':
+        if (preface.isNotEmpty) _say(preface);
+        await _draw(str('prompt'));
       case 'remember':
         final f = memory.add(str('fact'));
         _say(preface.isNotEmpty ? preface : 'Got it. I\'ll remember: $f');
@@ -2096,6 +2113,117 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     );
   }
 
+  // ---------- Pictures ----------
+  Future<void> _draw(String prompt, {bool wallpaper = false}) async {
+    if (prompt.trim().isEmpty) {
+      _say('What should I draw?');
+      return;
+    }
+    if (!ImageGen.ready) {
+      await Future.delayed(const Duration(milliseconds: 250));
+      _say('To draw pictures, add your Cloudflare account ID and API token in Vibe settings → Vibe AI → Pictures. '
+          'It\'s free with a daily limit.');
+      return;
+    }
+    if (!_netOk) {
+      _say(prefs.offlineMode ? '📴 Drawing needs internet, and offline mode is on.' : '📴 Drawing needs internet. You\'re offline.');
+      return;
+    }
+    setState(() {
+      _thinking = true;
+      _drawing = true;
+    });
+    _toBottom();
+    try {
+      final path = await ImageGen.draw(prompt, wallpaper: wallpaper);
+      if (!mounted) return;
+      _say(wallpaper ? '🎨 Here\'s your wallpaper. Say "set it as wallpaper" to use it.' : '🎨 $prompt', img: path);
+    } catch (e) {
+      _say('$e', error: true);
+    } finally {
+      if (mounted) {
+        setState(() {
+          _thinking = false;
+          _drawing = false;
+        });
+      }
+    }
+  }
+
+  String? get _lastImage {
+    for (final m in chat.msgs.reversed) {
+      if (m.img != null && File(m.img!).existsSync()) return m.img;
+    }
+    return null;
+  }
+
+  Future<bool> _wallpaperCommand(String text) async {
+    final m = RegExp(
+            r'^(?:set|use|make|apply)\s+(?:it|this|that|the (?:image|picture|last one))\s+(?:as\s+)?(?:my\s+)?'
+            r'(phone |home |lock ?screen |vibe |chat )?(wallpaper|background|lock ?screen)$',
+            caseSensitive: false)
+        .firstMatch(text.trim());
+    if (m == null) return false;
+    final path = _lastImage;
+    if (path == null) {
+      _say('There\'s no picture in the chat to use yet. Ask me to draw one, or send a photo.');
+      return true;
+    }
+    final where = '${m.group(1) ?? ''}${m.group(2)}'.toLowerCase();
+    if (where.contains('lock')) {
+      final ok = await Native.setWallpaper(path, lockOnly: true);
+      _say(ok ? '🔒 Set as your lock screen.' : 'Your phone didn\'t let me change the lock screen.', error: !ok);
+    } else if (where.contains('phone')) {
+      final ok = await Native.setWallpaper(path);
+      _say(ok ? '📱 Set as your phone wallpaper.' : 'Your phone didn\'t let me change the wallpaper.', error: !ok);
+    } else {
+      prefs.setWallpaper(path);
+      _say('✨ Set as the wallpaper behind this chat. Say "set it as lock screen" to use it there too.');
+    }
+    return true;
+  }
+
+  void _imageMenu(String path) {
+    prefs.heavy();
+    final c = VC.of(context);
+    Widget item(IconData i, String label, Future<void> Function() onTap) => ListTile(
+          leading: Icon(i, color: c.text),
+          title: Text(label, style: TextStyle(color: c.text, fontWeight: FontWeight.w500)),
+          onTap: () async {
+            Navigator.pop(context);
+            await onTap();
+          },
+        );
+    showModalBottomSheet(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          item(Icons.download_rounded, 'Save to Gallery', () async {
+            final uri = await Native.saveToGallery(path);
+            _say(uri != null ? '💾 Saved to Gallery → Pictures/Vibe.' : 'Couldn\'t save the picture.', error: uri == null);
+          }),
+          item(Icons.share_rounded, 'Share', () async {
+            final uri = await Native.saveToGallery(path);
+            if (uri != null) await Native.shareImage(uri);
+          }),
+          item(Icons.wallpaper_rounded, 'Use behind this chat', () async {
+            prefs.setWallpaper(path);
+          }),
+          item(Icons.phone_android_rounded, 'Set as phone wallpaper', () async {
+            final ok = await Native.setWallpaper(path);
+            if (!ok) _say('Your phone didn\'t let me change the wallpaper.', error: true);
+          }),
+          item(Icons.lock_rounded, 'Set as lock screen', () async {
+            final ok = await Native.setWallpaper(path, lockOnly: true);
+            if (!ok) _say('Your phone didn\'t let me change the lock screen.', error: true);
+          }),
+          const SizedBox(height: 8),
+        ]),
+      ),
+    );
+  }
+
   Future<void> _voice() async {
     prefs.tap();
     final t = await Native.listen();
@@ -2302,7 +2430,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
         },
         itemBuilder: (_, idx) {
           if (_thinking && idx == 0) {
-            return const Entrance(key: ValueKey('typing'), animate: true, child: _TypingRowHolder());
+            return Entrance(
+                key: const ValueKey('typing'),
+                animate: true,
+                child: _TypingRowHolder(label: _drawing ? 'Vibe is drawing…' : 'Vibe is typing…'));
           }
           final i = _thinking ? idx - 1 : idx;
           final m = msgs[n - 1 - i];
@@ -2328,18 +2459,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
       ),
     );
   }
-
-  // ignore: unused_element
-  Widget _typingRow(VC c) => Padding(
-        padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
-        child: Row(children: [
-          const BotAvatar(size: 24),
-          const SizedBox(width: 8),
-          const TypingDots(),
-          const SizedBox(width: 8),
-          Text('Vibe is typing…', style: TextStyle(color: c.muted, fontSize: 13, fontWeight: FontWeight.w600)),
-        ]),
-      );
 
   Widget _dayDivider(VC c, DateTime t) => Padding(
         padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
@@ -2373,6 +2492,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
           padding: const EdgeInsets.only(top: 2, bottom: 4),
           child: GestureDetector(
             onTap: () => _viewImage(m.img!),
+            onLongPress: () => _imageMenu(m.img!),
             child: ClipRRect(
               borderRadius: BorderRadius.circular(10),
               child: ConstrainedBox(
@@ -3035,7 +3155,8 @@ class _AppDrawerState extends State<_AppDrawer> {
 
 /// "Vibe is typing…" row with bouncing dots.
 class _TypingRowHolder extends StatelessWidget {
-  const _TypingRowHolder();
+  final String label;
+  const _TypingRowHolder({this.label = 'Vibe is typing…'});
   @override
   Widget build(BuildContext context) {
     final c = VC.of(context);
@@ -3046,7 +3167,7 @@ class _TypingRowHolder extends StatelessWidget {
         const SizedBox(width: 8),
         const TypingDots(),
         const SizedBox(width: 8),
-        Text('Vibe is typing…', style: TextStyle(color: c.muted, fontSize: 13, fontWeight: FontWeight.w600)),
+        Text(label, style: TextStyle(color: c.muted, fontSize: 13, fontWeight: FontWeight.w600)),
       ]),
     );
   }

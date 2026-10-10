@@ -89,6 +89,8 @@ class Gemini {
         _fn('list_reminders', 'Show upcoming reminders and scheduled messages.', {}, []),
         _fn('cancel_reminder', 'Cancel a reminder or scheduled message.',
             {'about': _s('Words that identify it')}, ['about']),
+        _fn('generate_image', 'Draw / create a picture from a description.',
+            {'prompt': _s('A detailed description of the picture, in English')}, ['prompt']),
         _fn('remember',
             'Save a lasting fact about the user or people in their life, when they ask you to remember '
                 'something or clearly tell you such a fact (e.g. "my brother is Ravi", "I\'m vegetarian").',

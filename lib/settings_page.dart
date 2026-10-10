@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'backup.dart';
 import 'mail.dart';
+import 'imagegen.dart';
 import 'day.dart';
 import 'gemini.dart';
 import 'launcher.dart';
@@ -24,7 +25,7 @@ class SettingsPage extends StatelessWidget {
     (Icons.contacts_rounded, 'People', 'Contacts, calls, SMS & default messenger', {'PEOPLE'}),
     (Icons.manage_search_rounded, 'Search & mail', 'Global search, SMS & files access, Gmail', {'SEARCH'}),
     (Icons.wb_sunny_rounded, 'Daily brief', 'Brief time, city for weather & calendar', {'DAILY BRIEF'}),
-    (Icons.auto_awesome_rounded, 'Vibe AI', 'On-phone AI, Gemini, backup AI & model', {'ON-PHONE AI', 'VIBE AI (GEMINI)'}),
+    (Icons.auto_awesome_rounded, 'Vibe AI', 'On-phone AI, Gemini, backup AI & pictures', {'ON-PHONE AI', 'VIBE AI (GEMINI)', 'PICTURES'}),
     (Icons.shield_rounded, 'Privacy', 'What stays on your phone', {'PRIVACY'}),
     (Icons.psychology_rounded, 'Memory', 'What Vibe remembers about you', {'MEMORY'}),
     (Icons.cloud_off_rounded, 'Offline mode', 'Use no internet; answer later', {'OFFLINE MODE'}),
@@ -403,6 +404,56 @@ class SettingsPage extends StatelessWidget {
             ),
           ]),
           ],
+          if (show.contains('PICTURES')) ...[
+          _section(c, 'PICTURES (CLOUDFLARE)'),
+          _group(c, [
+            ListTile(
+              leading: Icon(Icons.badge_rounded, color: c.muted),
+              title: Text('Account ID', style: TextStyle(color: c.text)),
+              subtitle: Text(prefs.cfAccount.isEmpty ? 'Not set' : prefs.cfAccount, style: TextStyle(color: c.faint)),
+              onTap: () => _editText(context, 'Cloudflare account ID', prefs.cfAccount,
+                  (v) => prefs.setCloudflare(v, prefs.cfToken), hint: '32 letters and numbers'),
+            ),
+            ListTile(
+              leading: Icon(Icons.key_rounded, color: c.muted),
+              title: Text('API token', style: TextStyle(color: c.text)),
+              subtitle: Text(prefs.cfToken.isEmpty ? 'Not set' : 'Set · stored encrypted on this phone',
+                  style: TextStyle(color: c.faint)),
+              onTap: () => _editText(context, 'Cloudflare API token', prefs.cfToken,
+                  (v) => prefs.setCloudflare(prefs.cfAccount, v), hint: 'Paste the token', secret: true),
+            ),
+            ListTile(
+              leading: Icon(Icons.open_in_new_rounded, color: c.muted),
+              title: Text('Create a token', style: TextStyle(color: c.text)),
+              subtitle: Text('Cloudflare → My Profile → API Tokens → Create Token → "Workers AI" template',
+                  style: TextStyle(color: c.faint)),
+              onTap: () => Native.openUrl('https://dash.cloudflare.com/profile/api-tokens'),
+            ),
+            if (ImageGen.ready)
+              ListTile(
+                leading: Icon(Icons.brush_rounded, color: c.muted),
+                title: Text('Test: draw a small picture', style: TextStyle(color: c.text)),
+                onTap: () async {
+                  final m = ScaffoldMessenger.of(context);
+                  m.showSnackBar(const SnackBar(content: Text('Drawing…')));
+                  try {
+                    await ImageGen.draw('a tiny blue robot waving, simple flat illustration');
+                    m.showSnackBar(const SnackBar(content: Text('Works! Ask Vibe to "draw …" in the chat.')));
+                  } catch (e) {
+                    m.showSnackBar(SnackBar(content: Text('$e')));
+                  }
+                },
+              ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 14),
+              child: Text(
+                  'Say "draw …", "create an image of …" or "make a wallpaper of …". Pictures are made by FLUX on '
+                  'Cloudflare\'s free daily quota, so your descriptions are sent to Cloudflare. '
+                  'Your account ID is on the right side of your Cloudflare dashboard home page.',
+                  style: TextStyle(color: c.faint, fontSize: 13, height: 1.35)),
+            ),
+          ]),
+          ],
           if (show.contains('PRIVACY')) ...[
           _section(c, 'PRIVACY'),
           _group(c, [
@@ -686,7 +737,7 @@ class SettingsPage extends StatelessWidget {
             ListTile(
               leading: Icon(Icons.info_outline_rounded, color: c.muted),
               title: Text('Vibe Launcher', style: TextStyle(color: c.text)),
-              subtitle: Text('Version 0.16.0', style: TextStyle(color: c.faint)),
+              subtitle: Text('Version 0.17.0', style: TextStyle(color: c.faint)),
             ),
           ]),
           ],
