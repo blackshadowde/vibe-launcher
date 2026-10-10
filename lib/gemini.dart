@@ -121,7 +121,9 @@ class Gemini {
     final talk = msgs.where((m) => !m.isNotif && !m.error && m.text.trim().isNotEmpty).toList();
     for (final m in talk.length > 16 ? talk.sublist(talk.length - 16) : talk) {
       final role = m.me ? 'user' : 'model';
-      final text = m.quote != null ? '(my reply to ${m.quote}) ${m.text}' : m.text;
+      final text = m.quote == null
+          ? m.text
+          : '(replying to ${m.quoteName ?? 'a message'}: "${m.quote}") ${m.text}';
       if (out.isNotEmpty && out.last['role'] == role) {
         if (role == 'user') {
           // An earlier message that never got an answer: drop it so Gemini answers the newest one

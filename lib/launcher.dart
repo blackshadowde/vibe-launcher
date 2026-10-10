@@ -58,8 +58,8 @@ class Native {
 
   static Future<bool> openUrl(String url) async =>
       await _c.invokeMethod<bool>('openUrl', {'url': url}) ?? false;
-  static Future<bool> playMusic(String q) async =>
-      await _c.invokeMethod<bool>('playMusic', {'query': q}) ?? false;
+  static Future<bool> playMusic(String q, {String? pkg}) async =>
+      await _c.invokeMethod<bool>('playMusic', {'query': q, 'package': pkg}) ?? false;
   static Future<bool> setAlarm(int h, int m, String label) async =>
       await _c.invokeMethod<bool>('setAlarm', {'hour': h, 'minute': m, 'label': label}) ?? false;
   static Future<bool> setTimer(int s, String label) async =>

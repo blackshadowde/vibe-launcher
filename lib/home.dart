@@ -519,7 +519,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
           final t = DateTime.fromMillisecondsSinceEpoch(m.ts);
           final ot = older == null ? null : DateTime.fromMillisecondsSinceEpoch(older.ts);
           final newDay = ot == null || !sameDay(ot, t);
-          final head = newDay || older!.sender != m.sender || m.ts - older.ts > 5 * 60 * 1000;
+          final head =
+              newDay || m.quote != null || older!.sender != m.sender || m.ts - older.ts > 5 * 60 * 1000;
           return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             if (newDay) _dayDivider(c, t),
             _message(c, m, t, head),
@@ -553,26 +554,25 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
         ]),
       );
 
+  /// Small avatar for a reply strip or quote.
+  Widget _miniAvatar(VC c, String? who, double size) {
+    if (who == 'vibe') return BotAvatar(size: size);
+    if (who == 'me' || who == null) return Avatar(name: prefs.name, size: size, dot: false);
+    final a = _byPkg(who);
+    if (a != null) return appIcon(a, size);
+    return CircleAvatar(
+        radius: size / 2,
+        backgroundColor: c.pane,
+        child: Icon(Icons.notifications_rounded, color: c.muted, size: size * 0.6));
+  }
+
   Widget _message(VC c, Msg m, DateTime t, bool head) {
     final body = <Widget>[
-      if (m.quote != null)
-        Padding(
-          padding: const EdgeInsets.only(bottom: 2),
-          child: Row(children: [
-            Icon(Icons.reply_rounded, size: 14, color: c.faint),
-            const SizedBox(width: 4),
-            Flexible(
-              child: Text(m.me ? 'Replied to ${m.quote}' : m.quote!,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(color: c.faint, fontSize: 12, fontWeight: FontWeight.w600)),
-            ),
-          ]),
-        ),
       if (m.isNotif && !m.media && (m.title ?? '').isNotEmpty)
         Text(m.title!, style: TextStyle(color: c.text, fontSize: 15, fontWeight: FontWeight.w700)),
       if (m.text.isNotEmpty)
         m.media
-            ? Text(m.text, style: TextStyle(color: c.text, fontSize: 15, height: 1.35, fontWeight: FontWeight.w600))
+            ? Text(m.text, style: TextStyle(color: c.text, fontSize: 15, height: 1.35))
             : m.isNotif
             ? Text(m.text, style: TextStyle(color: c.muted, fontSize: 15, height: 1.35))
             : richText(m.text, c, error: m.error),
@@ -580,96 +580,89 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
       for (final p in m.apps)
         if (_byPkg(p) case final a?)
           AppCard(app: a, onOpen: () => _launch(a), onLongPress: () => showAppMenu(context, a, () => _launch(a))),
-      if (m.isNotif && !m.media) _notifActions(c, m),
-      if (m.media) _mediaActions(c, m),
     ];
     Widget content = Column(crossAxisAlignment: CrossAxisAlignment.start, children: body);
-    if (m.isNotif) {
-      content = GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: () => _openNotif(m),
-        onLongPress: () => _notifMenu(m),
-        child: content,
-      );
-    }
+
+    Widget row;
     if (!head) {
-      return Padding(padding: const EdgeInsets.fromLTRB(68, 4, 16, 2), child: content);
-    }
-
-    Widget avatar;
-    String name;
-    if (m.me) {
-      avatar = Avatar(name: prefs.name, size: 40, dot: false);
-      name = prefs.name;
-    } else if (m.isNotif) {
-      final a = _byPkg(m.pkg!);
-      avatar = a != null
-          ? appIcon(a, 40)
-          : CircleAvatar(
-              radius: 20,
-              backgroundColor: c.pane,
-              child: Icon(Icons.notifications_rounded, color: c.muted, size: 22));
-      name = m.app ?? m.pkg!;
+      row = Padding(padding: const EdgeInsets.fromLTRB(68, 4, 16, 2), child: content);
     } else {
-      avatar = Builder(
-        builder: (ctx) => GestureDetector(
-          onLongPress: () => _quickApps(ctx),
-          child: const BotAvatar(size: 40),
-        ),
-      );
-      name = 'Vibe';
-    }
-
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 2),
-      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        avatar,
-        const SizedBox(width: 12),
-        Expanded(
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Row(children: [
-              Flexible(
-                child: Text(name,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(color: c.text, fontWeight: FontWeight.w700, fontSize: 16)),
-              ),
-              if (!m.me && !m.isNotif) ...[
-                const SizedBox(width: 6),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-                  decoration: BoxDecoration(color: VC.blurple, borderRadius: BorderRadius.circular(4)),
-                  child: const Text('APP',
-                      style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w800)),
-                ),
-              ],
-              const SizedBox(width: 8),
-              Text(stamp(t), style: TextStyle(color: c.faint, fontSize: 12)),
-            ]),
-            const SizedBox(height: 2),
-            content,
-          ]),
-        ),
-      ]),
-    );
-  }
-
-  Widget _notifActions(VC c, Msg m) {
-    Widget btn(IconData i, String label, VoidCallback onTap) => InkWell(
-          borderRadius: BorderRadius.circular(6),
-          onTap: onTap,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(2, 6, 10, 2),
-            child: Row(mainAxisSize: MainAxisSize.min, children: [
-              Icon(i, size: 16, color: VC.blurple),
-              const SizedBox(width: 4),
-              Text(label, style: const TextStyle(color: VC.blurple, fontSize: 13, fontWeight: FontWeight.w700)),
-            ]),
+      Widget avatar;
+      String name;
+      if (m.me) {
+        avatar = Avatar(name: prefs.name, size: 40, dot: false);
+        name = prefs.name;
+      } else if (m.isNotif) {
+        avatar = _miniAvatar(c, m.pkg, 40);
+        name = m.app ?? m.pkg!;
+      } else {
+        avatar = Builder(
+          builder: (ctx) => GestureDetector(
+            onLongPress: () => _quickApps(ctx),
+            child: const BotAvatar(size: 40),
           ),
         );
-    return Row(children: [
-      if (m.canReply) btn(Icons.reply_rounded, 'Reply', () => _startReply(m)),
-      btn(Icons.open_in_new_rounded, 'Open', () => _openNotif(m)),
-    ]);
+        name = 'Vibe';
+      }
+      final hasQuote = m.quote != null;
+      row = Padding(
+        padding: EdgeInsets.fromLTRB(16, hasQuote ? 10 : 12, 16, 2),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          if (hasQuote)
+            replyStrip(c,
+                avatar: _miniAvatar(c, m.quotePkg ?? (m.media ? m.pkg : null), 16),
+                name: m.quoteName ?? m.quote!,
+                preview: m.quoteName == null ? '' : m.quote!),
+          Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            avatar,
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Row(children: [
+                  Flexible(
+                    child: Text(name,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: c.text, fontWeight: FontWeight.w700, fontSize: 16)),
+                  ),
+                  if (!m.me && !m.isNotif) ...[
+                    const SizedBox(width: 6),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                      decoration: BoxDecoration(color: VC.blurple, borderRadius: BorderRadius.circular(4)),
+                      child: const Text('APP',
+                          style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w800)),
+                    ),
+                  ],
+                  const SizedBox(width: 8),
+                  Text(stamp(t), style: TextStyle(color: c.faint, fontSize: 12)),
+                ]),
+                const SizedBox(height: 2),
+                content,
+              ]),
+            ),
+          ]),
+        ]),
+      );
+    }
+
+    // Tap opens a notification; long-press shows options (music: playback controls)
+    if (m.isNotif) {
+      row = Builder(
+        builder: (ctx) => GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: () => _openNotif(m),
+          onLongPress: () => m.media ? _mediaPane(ctx, m) : _notifMenu(m),
+          child: row,
+        ),
+      );
+    }
+    final canReply = !m.me && !m.error && (m.media || m.canReply || !m.isNotif);
+    return SwipeReply(
+      onReply: canReply ? () => _startReply(m) : null,
+      onPassUpdate: _dragUpdate,
+      onPassEnd: _dragEnd,
+      child: row,
+    );
   }
 
   // ---------- notifications ----------
@@ -702,7 +695,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
         pkg: pkg,
         app: n['app']?.toString(),
         media: true,
-        quote: event == 'track' && prev.isNotEmpty ? '▶ "$prev"' : null);
+        quote: event == 'track' && prev.isNotEmpty ? '▶ "$prev"' : null,
+        quoteName: event == 'track' && prev.isNotEmpty ? n['app']?.toString() : null,
+        quotePkg: event == 'track' && prev.isNotEmpty ? pkg : null);
 
     // Quick play/pause toggles of the same song just update the last message instead of piling up
     final last = chat.msgs.isNotEmpty ? chat.msgs.last : null;
@@ -713,32 +708,88 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
         m.ts - last.ts < 2 * 60 * 1000;
     final atBottom = !_scroll.hasClients || _scroll.offset < 80;
     if (sameSong && event != 'track') {
-      chat.replaceLast(Msg(false, text, ts: m.ts, pkg: pkg, app: m.app, media: true, quote: last.quote));
+      chat.replaceLast(Msg(false, text,
+          ts: m.ts, pkg: pkg, app: m.app, media: true,
+          quote: last.quote, quoteName: last.quoteName, quotePkg: last.quotePkg));
     } else {
       chat.add(m);
     }
     if (atBottom) _toBottom();
   }
 
-  Widget _mediaActions(VC c, Msg m) {
-    Widget btn(IconData i, String action) => InkWell(
-          customBorder: const CircleBorder(),
-          onTap: () {
-            prefs.tap();
-            Native.mediaControl(m.pkg, action);
-          },
-          child: Padding(padding: const EdgeInsets.all(6), child: Icon(i, size: 24, color: c.text)),
-        );
-    return Padding(
-      padding: const EdgeInsets.only(top: 4),
-      child: Container(
-        decoration: BoxDecoration(color: c.pane, borderRadius: BorderRadius.circular(20)),
-        padding: const EdgeInsets.symmetric(horizontal: 4),
-        child: Row(mainAxisSize: MainAxisSize.min, children: [
-          btn(Icons.skip_previous_rounded, 'previous'),
-          btn(m.text.startsWith('⏸') ? Icons.play_arrow_rounded : Icons.pause_rounded, 'toggle'),
-          btn(Icons.skip_next_rounded, 'next'),
-        ]),
+  /// Long-press a music message: floating ⏮ ⏯ ⏭ pane next to it.
+  void _mediaPane(BuildContext msgCtx, Msg m) {
+    prefs.heavy();
+    _focus.unfocus();
+    final c = VC.of(context);
+    final box = msgCtx.findRenderObject() as RenderBox;
+    final pos = box.localToGlobal(Offset.zero);
+    final screenH = MediaQuery.of(context).size.height;
+    const paneH = 64.0;
+    final top = (pos.dy - paneH - 4 > 90 ? pos.dy - paneH - 4 : pos.dy + box.size.height + 4)
+        .clamp(90.0, screenH - paneH - 90);
+    final paused = m.text.startsWith('⏸');
+
+    showGeneralDialog(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: 'Close',
+      barrierColor: Colors.black26,
+      transitionDuration: const Duration(milliseconds: 160),
+      pageBuilder: (ctx, _, __) {
+        Widget btn(IconData i, String action, {bool big = false}) => InkWell(
+              customBorder: const CircleBorder(),
+              onTap: () {
+                prefs.tap();
+                Navigator.pop(ctx);
+                Native.mediaControl(m.pkg, action);
+              },
+              child: Container(
+                width: big ? 52 : 44,
+                height: big ? 52 : 44,
+                decoration: big ? const BoxDecoration(color: VC.blurple, shape: BoxShape.circle) : null,
+                child: Icon(i, size: big ? 30 : 26, color: big ? Colors.white : c.text),
+              ),
+            );
+        return Stack(children: [
+          Positioned(
+            left: 68,
+            top: top,
+            child: Material(
+              color: c.card,
+              elevation: 8,
+              shadowColor: Colors.black54,
+              borderRadius: BorderRadius.circular(32),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  btn(Icons.skip_previous_rounded, 'previous'),
+                  const SizedBox(width: 4),
+                  btn(paused ? Icons.play_arrow_rounded : Icons.pause_rounded, 'toggle', big: true),
+                  const SizedBox(width: 4),
+                  btn(Icons.skip_next_rounded, 'next'),
+                  Container(width: 1, height: 28, margin: const EdgeInsets.symmetric(horizontal: 6), color: c.divider),
+                  InkWell(
+                    customBorder: const CircleBorder(),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _notifMenu(m);
+                    },
+                    child: SizedBox(width: 40, height: 44, child: Icon(Icons.more_horiz_rounded, color: c.muted)),
+                  ),
+                ]),
+              ),
+            ),
+          ),
+        ]);
+      },
+      transitionBuilder: (ctx, anim, _, child) => FadeTransition(
+        opacity: anim,
+        child: ScaleTransition(
+          alignment: Alignment.topLeft,
+          scale: Tween(begin: 0.9, end: 1.0).animate(CurvedAnimation(parent: anim, curve: Curves.easeOutBack)),
+          child: child,
+        ),
       ),
     );
   }
@@ -788,15 +839,53 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     );
   }
 
+  /// Send what you typed as a reply: to a chat notification, a music app, or a Vibe message.
   Future<void> _sendReply(Msg to, String text) async {
     setState(() => _replyTo = null);
-    final who = [to.title, to.app].where((e) => (e ?? '').isNotEmpty).join(' · ');
-    chat.add(Msg(true, text, quote: who));
+    final preview = to.isNotif && !to.media && (to.title ?? '').isNotEmpty ? '${to.title}: ${to.text}' : to.text;
+    final mine = Msg(true, text,
+        quote: preview,
+        quoteName: to.isNotif ? (to.media ? to.app : (to.title?.isNotEmpty == true ? to.title : to.app)) : 'Vibe',
+        quotePkg: to.isNotif ? to.pkg : 'vibe');
+    chat.add(mine);
     _toBottom();
+
+    if (to.media) return _musicReply(to, text);
+    if (!to.isNotif) {
+      // Replying to Vibe: same as a normal message, Gemini sees what you replied to
+      final r = Brain.handle(text, _apps);
+      if (!r.sure && Gemini.enabled) {
+        await _askGemini(text);
+      } else {
+        await _doLocal(r);
+      }
+      return;
+    }
     final ok = to.nkey != null && await Native.replyNotif(to.nkey!, text);
     if (!ok) {
       _say('I couldn\'t send that. The notification may be gone. Open the chat instead?',
           apps: [if (to.pkg != null && _byPkg(to.pkg!) != null) to.pkg!], error: true);
+    }
+  }
+
+  /// Reply to a music app: play / pause / next / back, or a song name to search and play there.
+  Future<void> _musicReply(Msg to, String text) async {
+    final q = Brain.norm(text);
+    String? action;
+    if (RegExp(r'^(pause|stop|hold)( it| this| song| music)?$').hasMatch(q)) action = 'pause';
+    if (RegExp(r'^(play|resume|continue|start|unpause)( it| this| song| music)?$').hasMatch(q)) action = 'play';
+    if (RegExp(r'^(next|skip|next song|skip this|skip it|forward)$').hasMatch(q)) action = 'next';
+    if (RegExp(r'^(back|previous|prev|last|previous song|go back|before)$').hasMatch(q)) action = 'previous';
+    if (action != null) {
+      if (!await Native.mediaControl(to.pkg, action)) {
+        _say('${to.app ?? 'That app'} isn\'t playing anything I can control right now.', error: true);
+      }
+      return;
+    }
+    final song = text.replaceFirst(RegExp(r'^(play|search|find|put on)\s+', caseSensitive: false), '').trim();
+    if (!await Native.playMusic(song, pkg: to.pkg)) {
+      _say('${to.app ?? 'That app'} can\'t search for songs, so I opened YouTube Music.');
+      Native.openUrl('https://music.youtube.com/search?q=${Uri.encodeComponent(song)}');
     }
   }
 
@@ -919,7 +1008,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
                   onSubmitted: _send,
                   style: TextStyle(color: c.text, fontSize: 16),
                   decoration: InputDecoration(
-                    hintText: to != null ? 'Reply to ${to.title?.isNotEmpty == true ? to.title : to.app}' : 'Message Vibe',
+                    hintText: to == null
+                        ? 'Message Vibe'
+                        : to.media
+                            ? 'Play, pause, next, back or a song'
+                            : 'Reply to ${!to.isNotif ? 'Vibe' : to.title?.isNotEmpty == true ? to.title : to.app}',
                     hintStyle: TextStyle(color: c.faint),
                     border: InputBorder.none,
                     isDense: true,
@@ -961,7 +1054,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
               TextSpan(children: [
                 TextSpan(text: 'Replying to ', style: TextStyle(color: c.muted, fontSize: 13)),
                 TextSpan(
-                    text: [to.title, to.app].where((e) => (e ?? '').isNotEmpty).join(' · '),
+                    text: !to.isNotif
+                        ? 'Vibe'
+                        : to.media
+                            ? to.app ?? 'music'
+                            : [to.title, to.app].where((e) => (e ?? '').isNotEmpty).join(' · '),
                     style: TextStyle(color: c.text, fontSize: 13, fontWeight: FontWeight.w700)),
               ]),
               overflow: TextOverflow.ellipsis,

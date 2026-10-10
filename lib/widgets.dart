@@ -316,3 +316,162 @@ class _TypingDotsState extends State<TypingDots> with SingleTickerProviderStateM
 
   double _bounce(double t) => t < 0.3 ? (t / 0.3) : t < 0.6 ? (1 - (t - 0.3) / 0.3) : 0;
 }
+
+/// Discord-style swipe-to-reply (same feel as Vibe): swipe a message left, a blurple
+/// reply circle grows in on the right and pops with a buzz; let go to reply.
+/// Swipes to the right are handed to [onPassUpdate]/[onPassEnd] (the app list).
+class SwipeReply extends StatefulWidget {
+  final Widget child;
+  final VoidCallback? onReply; // null = can't reply to this one
+  final GestureDragUpdateCallback? onPassUpdate;
+  final GestureDragEndCallback? onPassEnd;
+  const SwipeReply({super.key, required this.child, this.onReply, this.onPassUpdate, this.onPassEnd});
+
+  @override
+  State<SwipeReply> createState() => _SwipeReplyState();
+}
+
+class _SwipeReplyState extends State<SwipeReply> with SingleTickerProviderStateMixin {
+  static const _threshold = 72.0, _maxDrag = 110.0;
+  late final AnimationController _back =
+      AnimationController(vsync: this, duration: const Duration(milliseconds: 200));
+  double _dx = 0, _from = 0;
+  bool _armed = false;
+  bool? _passing; // decided on the first movement
+
+  @override
+  void initState() {
+    super.initState();
+    _back.addListener(() => setState(() => _dx = _from * (1 - Curves.easeOutCubic.transform(_back.value))));
+  }
+
+  @override
+  void dispose() {
+    _back.dispose();
+    super.dispose();
+  }
+
+  void _update(DragUpdateDetails d) {
+    _passing ??= d.delta.dx > 0 || widget.onReply == null;
+    if (_passing!) return widget.onPassUpdate?.call(d);
+    if (_back.isAnimating) _back.stop();
+    var next = _dx + d.delta.dx;
+    if (next > 0) next = 0;
+    if (next < -_threshold) next = _dx + d.delta.dx * 0.45; // rubber band
+    next = next.clamp(-_maxDrag, 0.0);
+    final armed = next <= -_threshold;
+    if (armed && !_armed) prefs.heavy();
+    setState(() {
+      _dx = next;
+      _armed = armed;
+    });
+  }
+
+  void _end(DragEndDetails d) {
+    final passing = _passing ?? false;
+    _passing = null;
+    if (passing) return widget.onPassEnd?.call(d);
+    final fire = _armed;
+    _armed = false;
+    _from = _dx;
+    _back.forward(from: 0);
+    if (fire) {
+      Future.delayed(const Duration(milliseconds: 140), () {
+        if (mounted) widget.onReply?.call();
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final progress = (-_dx / _threshold).clamp(0.0, 1.0);
+    return GestureDetector(
+      behavior: HitTestBehavior.translucent,
+      onHorizontalDragUpdate: _update,
+      onHorizontalDragEnd: _end,
+      onHorizontalDragCancel: () => _end(DragEndDetails()),
+      child: ClipRect(
+        child: Stack(alignment: Alignment.centerRight, children: [
+          if (_dx < -1)
+            Positioned(
+              right: 16,
+              child: Opacity(
+                opacity: progress,
+                child: AnimatedScale(
+                  scale: _armed ? 1.15 : 0.55 + 0.45 * progress,
+                  duration: const Duration(milliseconds: 140),
+                  curve: Curves.easeOutBack,
+                  child: Container(
+                    width: 38,
+                    height: 38,
+                    decoration: BoxDecoration(
+                      color: VC.blurple,
+                      shape: BoxShape.circle,
+                      boxShadow: _armed
+                          ? [BoxShadow(color: VC.blurple.withAlpha(120), blurRadius: 10)]
+                          : null,
+                    ),
+                    child: const Icon(Icons.reply, color: Colors.white, size: 22),
+                  ),
+                ),
+              ),
+            ),
+          Transform.translate(offset: Offset(_dx, 0), child: widget.child),
+        ]),
+      ),
+    );
+  }
+}
+
+/// Discord-style reply connector: up from the avatar's top-centre, round corner, then right.
+class ReplyCurve extends CustomPainter {
+  final Color color;
+  const ReplyCurve(this.color);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final cx = size.width / 2, mid = size.height / 2;
+    const r = 8.0;
+    final paint = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..strokeCap = StrokeCap.round;
+    canvas.drawPath(
+        Path()
+          ..moveTo(cx, size.height + 2)
+          ..lineTo(cx, mid + r)
+          ..quadraticBezierTo(cx, mid, cx + r, mid)
+          ..lineTo(size.width, mid),
+        paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant ReplyCurve old) => old.color != color;
+}
+
+/// The strip above a reply: curve, tiny avatar, @name, one-line preview.
+Widget replyStrip(VC c, {required Widget avatar, required String name, required String preview}) =>
+    SizedBox(
+      height: 22,
+      child: Row(children: [
+        SizedBox(width: 40, height: 22, child: CustomPaint(painter: ReplyCurve(c.muted.withValues(alpha: 0.45)))),
+        const SizedBox(width: 6),
+        avatar,
+        const SizedBox(width: 6),
+        Flexible(
+          flex: 0,
+          child: Text('@$name',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: c.text, fontSize: 13.5, fontWeight: FontWeight.w600)),
+        ),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Text(preview,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: c.muted, fontSize: 13.5)),
+        ),
+      ]),
+    );

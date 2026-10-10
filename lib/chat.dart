@@ -18,7 +18,9 @@ class Msg {
   final String? nkey; // Android notification key, for reply/open
   final bool canReply;
   // Your reply to a notification ("Ravi · WhatsApp"), or the previous song for a song change
-  final String? quote;
+  final String? quote; // preview text of the message being replied to
+  final String? quoteName; // who wrote it (app, sender, "Vibe" or your name)
+  final String? quotePkg; // its avatar: an app package, 'vibe' or 'me'
   final bool media; // music update from a player app
 
   Msg(this.me, this.text,
@@ -32,6 +34,8 @@ class Msg {
       this.nkey,
       this.canReply = false,
       this.quote,
+      this.quoteName,
+      this.quotePkg,
       this.media = false})
       : ts = ts ?? DateTime.now().millisecondsSinceEpoch;
 
@@ -51,6 +55,8 @@ class Msg {
         if (nkey != null) 'k': nkey,
         if (canReply) 'r': true,
         if (quote != null) 'q': quote,
+        if (quoteName != null) 'qn': quoteName,
+        if (quotePkg != null) 'qp': quotePkg,
         if (media) 'md': true,
       };
   static Msg fromJson(Map j) => Msg(j['m'] == true, j['t'] ?? '',
@@ -64,6 +70,8 @@ class Msg {
       nkey: j['k'],
       canReply: j['r'] == true,
       quote: j['q'],
+      quoteName: j['qn'],
+      quotePkg: j['qp'],
       media: j['md'] == true);
 }
 
