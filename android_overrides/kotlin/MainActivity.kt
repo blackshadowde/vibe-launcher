@@ -469,32 +469,6 @@ class MainActivity : FlutterActivity() {
                     } catch (e: Exception) { docResult = null; result.success(null) }
                 }
                 "nanoStatus" -> scope.launch { result.success(nanoStatus()) }
-                // Why the on-phone AI isn't ready: the exact status / error, and the AICore app versions
-                "nanoInfo" -> scope.launch {
-                    var status = "unknown"
-                    var err = ""
-                    if (nano == null) {
-                        status = "no client"
-                        err = try { Generation.getClient(); "" } catch (e: Throwable) { e.toString() }
-                    } else {
-                        try {
-                            status = when (val st = nano!!.checkStatus()) {
-                                FeatureStatus.AVAILABLE -> "available"
-                                FeatureStatus.DOWNLOADABLE -> "downloadable"
-                                FeatureStatus.DOWNLOADING -> "downloading"
-                                FeatureStatus.UNAVAILABLE -> "unavailable"
-                                else -> "status $st"
-                            }
-                        } catch (e: Throwable) { status = "error"; err = e.toString().take(300) }
-                    }
-                    fun ver(p: String) = try { packageManager.getPackageInfo(p, 0).versionName ?: "?" } catch (_: Throwable) { "not installed" }
-                    result.success(mapOf(
-                        "status" to status, "error" to err,
-                        "aicore" to ver("com.google.android.aicore"),
-                        "pcs" to ver("com.google.android.as.oss"),
-                        "model" to Build.MODEL
-                    ))
-                }
                 "nanoDownload" -> scope.launch {
                     var ok = false
                     var total = 0L
