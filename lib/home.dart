@@ -252,6 +252,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
 
   Future<void> _pause() => Future.delayed(const Duration(milliseconds: 350));
 
+  /// Waits until an app's "Opening…" message has fully slid into the timeline, then the app can open.
+  Future<void> _shown() async {
+    _toBottom();
+    await WidgetsBinding.instance.endOfFrame;
+    await Future.delayed(const Duration(milliseconds: 560));
+  }
+
   Future<void> _doLocal(Reply r) async {
     if (r.act == Act.clear) {
       chat.clear();
@@ -261,13 +268,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     // Opening an app or Settings: the app itself answers
     if (r.act == Act.open && r.app != null) {
       _appSays(r.app!.pkg, r.app!.label, 'Opening…');
-      await _pause();
+      await _shown();
       _launch(r.app!);
       return;
     }
     if (r.act == Act.phoneSettings) {
       _appSays(_settingsPkg, 'Settings', 'Opening Settings…', action: {'settings': 'android.settings.SETTINGS'});
-      await _pause();
+      await _shown();
       Native.openSettings();
       return;
     }
@@ -300,7 +307,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
 
   void _closeDrawer() => _dc.animateBack(0, curve: Curves.easeOutCubic);
 
-  double get _panelW => MediaQuery.of(context).size.width * 0.86;
+  double get _panelW => MediaQuery.of(context).size.width;
 
   void _dragUpdate(DragUpdateDetails d) {
     if (_dc.value == 0 && (d.primaryDelta ?? 0) > 0) _focus.unfocus();
@@ -418,7 +425,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
         final app = found.first.app;
         if (preface.isNotEmpty && !preface.toLowerCase().startsWith('opening')) _say(preface);
         _appSays(app.pkg, app.label, 'Opening…');
-        await _pause();
+        await _shown();
         _launch(app);
       case 'show_all_apps':
         _say(say('Here are all your apps.'));
@@ -1825,7 +1832,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
   Future<void> _talkAndOpen(String pkg, String name, String text, Map action) async {
     _focus.unfocus();
     _appSays(pkg, name, text, action: action);
-    await _pause();
+    await _shown();
     await _doTalk(action, pkg);
   }
 
@@ -2357,10 +2364,31 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
                       child: GestureDetector(
                         onHorizontalDragUpdate: _dragUpdate,
                         onHorizontalDragEnd: _dragEnd,
-                        child: _AppDrawer(apps: _apps, loaded: _loaded, onSearch: () => _openSearch(), onLaunch: (a) {
-                          _closeDrawer();
-                          _launch(a);
-                        }),
+                        child: _AppDrawer(
+                          apps: _apps,
+                          loaded: _loaded,
+                          status: (prefs.offlineMode || !_online) ? 'Offline mode' : 'Online',
+                          onSearch: () {
+                            _closeDrawer();
+                            _openSearch();
+                          },
+                          onPlayStore: () {
+                            _closeDrawer();
+                            _playStore('');
+                          },
+                          onMissed: () {
+                            _closeDrawer();
+                            _send('what did I miss?');
+                          },
+                          onSettings: () {
+                            _closeDrawer();
+                            _openLauncherSettings();
+                          },
+                          onLaunch: (a) {
+                            _closeDrawer();
+                            _launch(a);
+                          },
+                        ),
                       ),
                     ),
                   ]);
@@ -2494,6 +2522,25 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
                 child: _TypingRowHolder(label: _drawing ? 'Vibe is drawing…' : 'Vibe is typing…'));
           }
           final i = _thinking ? idx - 1 : idx;
+          try {
+            return _timelineItem(c, msgs, n, i);
+          } catch (e, st) {
+            noteError(e, st);
+            return KeyedSubtree(
+              key: ValueKey('bad$i'),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(68, 4, 16, 4),
+                child: Text('(This message couldn\'t be shown)', style: TextStyle(color: c.faint, fontSize: 13)),
+              ),
+            );
+          }
+        },
+      ),
+    );
+  }
+
+  Widget _timelineItem(VC c, List<Msg> msgs, int n, int i) {
+          if (n - 1 - i < 0 || n - 1 - i >= msgs.length) return const SizedBox.shrink();
           final m = msgs[n - 1 - i];
           final older = n - 2 - i >= 0 ? msgs[n - 2 - i] : null;
           final t = DateTime.fromMillisecondsSinceEpoch(m.ts);
@@ -2513,9 +2560,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
                   ? Stagger(index: i, child: row)
                   : row;
           return KeyedSubtree(key: ValueKey(id), child: row);
-        },
-      ),
-    );
   }
 
   Widget _dayDivider(VC c, DateTime t) => Padding(
@@ -3133,103 +3177,392 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
 }
 
 /// All apps, slides in from the left.
+/// App tray laid out like Vibe's home: category rail on the left, search + app list in the middle,
+/// and the floating "you" card at the bottom.
 class _AppDrawer extends StatefulWidget {
   final List<AppEntry> apps;
   final bool loaded;
+  final String status;
   final void Function(AppEntry) onLaunch;
-  final VoidCallback? onSearch;
-  const _AppDrawer({required this.apps, required this.loaded, required this.onLaunch, this.onSearch});
+  final VoidCallback onSearch, onPlayStore, onMissed, onSettings;
+  const _AppDrawer({
+    required this.apps,
+    required this.loaded,
+    required this.status,
+    required this.onLaunch,
+    required this.onSearch,
+    required this.onPlayStore,
+    required this.onMissed,
+    required this.onSettings,
+  });
   @override
   State<_AppDrawer> createState() => _AppDrawerState();
 }
 
+/// Android's app categories (ApplicationInfo.category), plus "Recent" (-2) and everything else (-1).
+const _cats = <(int, String, IconData)>[
+  (-2, 'Recent', Icons.history_rounded),
+  (4, 'Social', Icons.forum_rounded),
+  (1, 'Music & audio', Icons.headphones_rounded),
+  (2, 'Video', Icons.movie_rounded),
+  (3, 'Photos', Icons.photo_rounded),
+  (0, 'Games', Icons.sports_esports_rounded),
+  (5, 'News', Icons.newspaper_rounded),
+  (6, 'Maps', Icons.map_rounded),
+  (7, 'Productivity', Icons.work_rounded),
+  (8, 'Accessibility', Icons.accessibility_new_rounded),
+  (-1, 'Other', Icons.apps_rounded),
+];
+
 class _AppDrawerState extends State<_AppDrawer> {
-  String _q = '';
+  final _filter = TextEditingController();
+  int? _cat; // null = all apps
+
+  @override
+  void dispose() {
+    _filter.dispose();
+    super.dispose();
+  }
+
+  int _catOf(AppEntry a) => _cats.any((e) => e.$1 == a.category && e.$1 >= 0) ? a.category : -1;
 
   @override
   Widget build(BuildContext context) {
     final c = VC.of(context);
-    final q = _q.trim().toLowerCase();
-    final list = widget.apps
-        .where((a) => !prefs.hidden.contains(a.pkg) && (q.isEmpty || a.label.toLowerCase().contains(q)))
-        .toList();
+    final q = _filter.text.trim().toLowerCase();
+    final shown = widget.apps.where((a) => !prefs.hidden.contains(a.pkg)).toList();
     int byName(AppEntry a, AppEntry b) => a.label.toLowerCase().compareTo(b.label.toLowerCase());
-    if (prefs.sort == SortMode.az || q.isNotEmpty) {
-      list.sort(byName);
-    } else {
-      list.sort((a, b) {
-        final d = (prefs.lastUsed[b.pkg] ?? 0).compareTo(prefs.lastUsed[a.pkg] ?? 0);
-        return d != 0 ? d : byName(a, b);
-      });
+    int byRecent(AppEntry a, AppEntry b) {
+      final d = (prefs.lastUsed[b.pkg] ?? 0).compareTo(prefs.lastUsed[a.pkg] ?? 0);
+      return d != 0 ? d : byName(a, b);
     }
-    return Material(
-      color: c.pane,
-      elevation: 16,
-      shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.horizontal(right: Radius.circular(16))),
-      clipBehavior: Clip.antiAlias,
-      child: SafeArea(
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 10),
-            child: Row(children: [
-              Text('Apps', style: TextStyle(color: c.text, fontSize: 20, fontWeight: FontWeight.w800)),
-              const SizedBox(width: 8),
-              Text('${list.length}', style: TextStyle(color: c.faint, fontSize: 14)),
-              const Spacer(),
-              if (widget.onSearch != null)
-                IconButton(
-                  tooltip: 'Search everything',
-                  icon: Icon(Icons.manage_search_rounded, color: c.muted),
-                  onPressed: widget.onSearch,
-                ),
-            ]),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-            child: SizedBox(
-              height: 40,
-              child: TextField(
-                onChanged: (v) => setState(() => _q = v),
-                onSubmitted: (_) { if (list.isNotEmpty) widget.onLaunch(list.first); },
-                textInputAction: TextInputAction.go,
-                style: TextStyle(color: c.text, fontSize: 15),
-                decoration: InputDecoration(
-                  hintText: 'Find an app',
-                  hintStyle: TextStyle(color: c.faint),
-                  prefixIcon: Icon(Icons.search_rounded, color: c.faint, size: 20),
-                  filled: true,
-                  fillColor: c.input,
-                  contentPadding: EdgeInsets.zero,
-                  border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
+
+    // Rail: only categories that have apps
+    final cats = _cats.where((e) {
+      if (e.$1 == -2) return shown.any((a) => prefs.lastUsed.containsKey(a.pkg));
+      return shown.any((a) => _catOf(a) == e.$1);
+    }).toList();
+    if (_cat != null && !cats.any((e) => e.$1 == _cat)) _cat = null;
+
+    var list = shown.where((a) {
+      if (q.isNotEmpty && !a.label.toLowerCase().contains(q)) return false;
+      if (_cat == null || q.isNotEmpty) return true;
+      if (_cat == -2) return prefs.lastUsed.containsKey(a.pkg);
+      return _catOf(a) == _cat;
+    }).toList();
+    if (_cat == -2) {
+      list.sort(byRecent);
+      list = list.take(20).toList();
+    } else {
+      list.sort(prefs.sort == SortMode.az || q.isNotEmpty ? byName : byRecent);
+    }
+    final title = q.isNotEmpty
+        ? 'RESULTS'
+        : _cat == null
+            ? 'ALL APPS'
+            : _cats.firstWhere((e) => e.$1 == _cat).$2.toUpperCase();
+
+    return ColoredBox(
+      color: c.rail,
+      child: Stack(children: [
+        Row(children: [
+          _rail(c, cats),
+          Expanded(
+            child: ClipRRect(
+              borderRadius: const BorderRadius.only(topLeft: Radius.circular(24)),
+              child: Material(
+                color: c.chat,
+                child: SafeArea(
+                  bottom: false,
+                  left: false,
+                  child: Column(children: [
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 10, 12, 6),
+                      child: TextField(
+                        controller: _filter,
+                        onChanged: (_) => setState(() {}),
+                        onSubmitted: (_) {
+                          if (list.isNotEmpty) widget.onLaunch(list.first);
+                        },
+                        textInputAction: TextInputAction.go,
+                        style: TextStyle(color: c.text, fontSize: 16),
+                        decoration: InputDecoration(
+                          hintText: 'Find or open an app',
+                          hintStyle: TextStyle(color: c.faint),
+                          prefixIcon: Icon(Icons.search, color: c.muted),
+                          filled: true,
+                          fillColor: c.rail,
+                          isDense: true,
+                          contentPadding: const EdgeInsets.symmetric(vertical: 10),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: BorderSide.none,
+                          ),
+                        ),
+                      ),
+                    ),
+                    Expanded(
+                      child: !widget.loaded
+                          ? Center(child: CircularProgressIndicator(color: VC.blurple))
+                          : Builder(builder: (_) {
+                              final top = [
+                                if (q.isEmpty)
+                                  _navTile(c, Icons.manage_search_rounded, 'Search everything', widget.onSearch),
+                                _section(c, '$title — ${list.length}', widget.onPlayStore),
+                              ];
+                              return ListView.builder(
+                                padding: const EdgeInsets.only(bottom: 110),
+                                itemCount: top.length + list.length,
+                                itemBuilder: (_, i) {
+                                  if (i < top.length) return top[i];
+                                  final a = list[i - top.length];
+                                  return Stagger(
+                                    key: ValueKey('app_${_cat}_${a.pkg}'),
+                                    index: i - top.length,
+                                    dy: 12,
+                                    child: Pressable(scale: 0.97, child: _appTile(c, a)),
+                                  );
+                                },
+                              );
+                            }),
+                    ),
+                  ]),
                 ),
               ),
             ),
           ),
-          Expanded(
-            child: !widget.loaded
-                ? Center(child: CircularProgressIndicator(color: VC.blurple))
-                : ListView.builder(
-                    padding: const EdgeInsets.only(bottom: 8),
-                    itemCount: list.length,
-                    itemBuilder: (_, i) => Stagger(
-                      index: i,
-                      dy: 12,
-                      child: Pressable(
-                        child: AppRow(
-                          app: list[i],
-                          onTap: () => widget.onLaunch(list[i]),
-                          onLongPress: () => showAppMenu(context, list[i], () => widget.onLaunch(list[i])),
-                        ),
+        ]),
+        Positioned(left: 0, right: 0, bottom: 0, child: _userBar(c)),
+      ]),
+    );
+  }
+
+  /// Far-left rail: you on top, then one round button per category, "+" for the Play Store.
+  Widget _rail(VC c, List<(int, String, IconData)> cats) {
+    Widget item(bool active, Widget child, VoidCallback onTap, String tip) => Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Tooltip(
+            message: tip,
+            child: Stack(alignment: Alignment.center, children: [
+              Positioned(
+                left: 0,
+                top: 0,
+                bottom: 0,
+                child: Center(
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 260),
+                    curve: Curves.easeOutCubic,
+                    width: 4,
+                    height: active ? 30 : 0,
+                    decoration: BoxDecoration(
+                      color: c.text,
+                      borderRadius: const BorderRadius.only(
+                          topRight: Radius.circular(4), bottomRight: Radius.circular(4)),
+                    ),
+                  ),
+                ),
+              ),
+              Pressable(
+                child: GestureDetector(
+                  onTap: () {
+                    prefs.tap();
+                    onTap();
+                  },
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 280),
+                    curve: Curves.easeOutCubic,
+                    width: 56,
+                    height: 56,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(active ? 19 : 28),
+                      border: Border.all(width: 2, color: active ? VC.blurple : Colors.transparent),
+                    ),
+                    child: TweenAnimationBuilder<double>(
+                      tween: Tween(end: active ? 15.0 : 23.0),
+                      duration: const Duration(milliseconds: 280),
+                      curve: Curves.easeOutCubic,
+                      builder: (_, r, __) => ClipRRect(
+                        borderRadius: BorderRadius.circular(r),
+                        child: SizedBox(width: 46, height: 46, child: child),
                       ),
                     ),
                   ),
+                ),
+              ),
+            ]),
+          ),
+        );
+
+    return SafeArea(
+      right: false,
+      bottom: false,
+      child: SizedBox(
+        width: 72,
+        child: Column(children: [
+          const SizedBox(height: 10),
+          GestureDetector(
+            onTap: () => setState(() {
+              _cat = null;
+              _filter.clear();
+            }),
+            child: Avatar(name: prefs.name, size: 48, ring: c.rail),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 20),
+            child: Divider(height: 1, color: c.divider),
+          ),
+          Expanded(
+            child: ListView(padding: const EdgeInsets.only(bottom: 110), children: [
+              for (final e in cats)
+                item(
+                  _cat == e.$1,
+                  ColoredBox(
+                    color: _cat == e.$1 ? VC.blurple : c.pane,
+                    child: Icon(e.$3, size: 22, color: _cat == e.$1 ? Colors.white : c.muted),
+                  ),
+                  () => setState(() {
+                    _cat = _cat == e.$1 ? null : e.$1;
+                    _filter.clear();
+                  }),
+                  e.$2,
+                ),
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                child: Center(
+                  child: Material(
+                    color: c.input,
+                    shape: const CircleBorder(),
+                    child: IconButton(
+                      icon: Icon(Icons.add, color: VC.blurple),
+                      tooltip: 'Get apps',
+                      onPressed: widget.onPlayStore,
+                    ),
+                  ),
+                ),
+              ),
+            ]),
           ),
         ]),
       ),
     );
   }
+
+  Widget _navTile(VC c, IconData icon, String label, VoidCallback onTap) => ListTile(
+        dense: true,
+        leading: Icon(icon, color: c.muted),
+        title: Text(label, style: TextStyle(color: c.text, fontWeight: FontWeight.w600)),
+        onTap: onTap,
+      );
+
+  Widget _section(VC c, String text, VoidCallback onAdd) => Padding(
+        padding: const EdgeInsets.fromLTRB(16, 14, 8, 2),
+        child: Row(children: [
+          Expanded(
+            child: Text(text,
+                style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 0.6, color: c.muted)),
+          ),
+          IconButton(icon: Icon(Icons.add, color: c.muted), tooltip: 'Get apps', onPressed: onAdd),
+        ]),
+      );
+
+  Widget _appTile(VC c, AppEntry a) {
+    final seen = ago(prefs.lastUsed[a.pkg]);
+    final cat = _cats.firstWhere((e) => e.$1 == _catOf(a));
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 1),
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(12),
+        clipBehavior: Clip.hardEdge,
+        child: ListTile(
+          onTap: () => widget.onLaunch(a),
+          onLongPress: () => showAppMenu(context, a, () => widget.onLaunch(a)),
+          contentPadding: const EdgeInsets.only(left: 10, right: 0),
+          leading: appIcon(a, 42),
+          title: Text(a.label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: c.text, fontWeight: FontWeight.w600)),
+          subtitle: Row(children: [
+            Icon(seen.isEmpty ? cat.$3 : Icons.schedule_rounded, size: 12, color: c.muted),
+            const SizedBox(width: 4),
+            Expanded(
+              child: Text(seen.isEmpty ? (cat.$1 == -1 ? 'App' : cat.$2) : seen,
+                  maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 12, color: c.muted)),
+            ),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  /// Floating card at the bottom: big avatar over a pill with your name, status, bell and gear.
+  Widget _userBar(VC c) => SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(10, 6, 10, 10),
+          child: SizedBox(
+            height: 76,
+            child: Stack(clipBehavior: Clip.none, children: [
+              Positioned(
+                left: 34,
+                right: 0,
+                top: 8,
+                bottom: 8,
+                child: Material(
+                  color: c.pane,
+                  elevation: 6,
+                  shadowColor: Colors.black,
+                  shape: const StadiumBorder(),
+                  child: Padding(
+                    padding: const EdgeInsets.only(left: 50, right: 8),
+                    child: Row(children: [
+                      Expanded(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(prefs.name,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(color: c.text, fontWeight: FontWeight.w600, fontSize: 16)),
+                            Text(widget.status,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(fontSize: 13, color: c.muted)),
+                          ],
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.notifications),
+                        color: c.muted,
+                        tooltip: 'What did I miss?',
+                        onPressed: widget.onMissed,
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.settings),
+                        color: c.muted,
+                        tooltip: 'Vibe settings',
+                        onPressed: widget.onSettings,
+                      ),
+                    ]),
+                  ),
+                ),
+              ),
+              Positioned(
+                left: 0,
+                top: 0,
+                child: Container(
+                  padding: const EdgeInsets.all(3),
+                  decoration: BoxDecoration(shape: BoxShape.circle, color: c.chat),
+                  child: Avatar(name: prefs.name, size: 64, ring: c.chat),
+                ),
+              ),
+            ]),
+          ),
+        ),
+      );
 }
 
 /// "Vibe is typing…" row with bouncing dots.
