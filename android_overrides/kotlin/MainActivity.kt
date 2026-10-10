@@ -81,7 +81,10 @@ class MainActivity : FlutterActivity() {
                     val i = Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH)
                         .putExtra(MediaStore.EXTRA_MEDIA_FOCUS, "vnd.android.cursor.item/*")
                         .putExtra(SearchManager.QUERY, q)
-                    result.success(open(i))
+                    // Replying to a music app: ask that app first, then any player
+                    val target = call.argument<String>("package")
+                    val ok = (target != null && open(Intent(i).setPackage(target))) || open(i)
+                    result.success(ok)
                 }
                 "setAlarm" -> {
                     val i = Intent(AlarmClock.ACTION_SET_ALARM)
