@@ -249,6 +249,57 @@ class MainActivity : FlutterActivity() {
                     val p = musicApp()
                     result.success(p?.let { mapOf("package" to it, "label" to labelOf(it)) })
                 }
+                // ---------- App shortcuts (long-press actions of other apps) ----------
+                "shortcuts" -> {
+                    val la = getSystemService(LAUNCHER_APPS_SERVICE) as android.content.pm.LauncherApps
+                    if (!(try { la.hasShortcutHostPermission() } catch (_: Throwable) { false })) { result.success(null); return }
+                    val q = android.content.pm.LauncherApps.ShortcutQuery().setQueryFlags(
+                        android.content.pm.LauncherApps.ShortcutQuery.FLAG_MATCH_DYNAMIC or
+                            android.content.pm.LauncherApps.ShortcutQuery.FLAG_MATCH_MANIFEST or
+                            android.content.pm.LauncherApps.ShortcutQuery.FLAG_MATCH_PINNED)
+                    call.argument<String>("package")?.let { q.setPackage(it) }
+                    val list = try { la.getShortcuts(q, android.os.Process.myUserHandle()) ?: emptyList() } catch (_: Throwable) { emptyList() }
+                    result.success(list.filter { it.isEnabled }.map {
+                        mapOf("package" to it.`package`, "id" to it.id, "label" to (it.shortLabel?.toString() ?: ""),
+                            "long" to (it.longLabel?.toString() ?: ""), "rank" to it.rank)
+                    })
+                }
+                "shortcutIcon" -> Thread {
+                    val bytes = try {
+                        val la = getSystemService(LAUNCHER_APPS_SERVICE) as android.content.pm.LauncherApps
+                        val q = android.content.pm.LauncherApps.ShortcutQuery()
+                            .setPackage(call.argument<String>("package"))
+                            .setShortcutIds(listOf(call.argument<String>("id") ?: ""))
+                            .setQueryFlags(android.content.pm.LauncherApps.ShortcutQuery.FLAG_MATCH_DYNAMIC or
+                                android.content.pm.LauncherApps.ShortcutQuery.FLAG_MATCH_MANIFEST or
+                                android.content.pm.LauncherApps.ShortcutQuery.FLAG_MATCH_PINNED)
+                        val sc = la.getShortcuts(q, android.os.Process.myUserHandle())?.firstOrNull()
+                        val d = sc?.let { la.getShortcutIconDrawable(it, resources.displayMetrics.densityDpi) }
+                        d?.let { drawableBytes(it) }
+                    } catch (_: Throwable) { null }
+                    runOnUiThread { try { result.success(bytes) } catch (_: Throwable) {} }
+                }.start()
+                "startShortcut" -> {
+                    val ok = try {
+                        val la = getSystemService(LAUNCHER_APPS_SERVICE) as android.content.pm.LauncherApps
+                        la.startShortcut(call.argument<String>("package") ?: "", call.argument<String>("id") ?: "", null, null,
+                            android.os.Process.myUserHandle())
+                        true
+                    } catch (_: Throwable) { false }
+                    result.success(ok)
+                }
+                // ---------- Fingerprints for VirusTotal: a file, a shared file, or an installed app ----------
+                "sha256" -> Thread {
+                    val r = try { fingerprint(call.argument<String>("path"), call.argument<String>("uri"), call.argument<String>("package")) }
+                        catch (e: Throwable) { null }
+                    runOnUiThread { try { result.success(r) } catch (_: Throwable) {} }
+                }.start()
+                "readForUpload" -> Thread {
+                    // Copies the file to Vibe's cache so it can be uploaded (only when you tap Upload)
+                    val r = try { copyForUpload(call.argument<String>("path"), call.argument<String>("uri"), call.argument<String>("package")) }
+                        catch (e: Throwable) { null }
+                    runOnUiThread { try { result.success(r) } catch (_: Throwable) {} }
+                }.start()
                 "playMusic" -> {
                     val q = call.argument<String>("query") ?: ""
                     val i = Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH)
@@ -589,10 +640,23 @@ class MainActivity : FlutterActivity() {
         val out = HashMap<String, Any>()
         i.getStringExtra(Intent.EXTRA_TEXT)?.let { if (it.isNotBlank()) out["text"] = it }
         i.getStringExtra(Intent.EXTRA_SUBJECT)?.let { if (it.isNotBlank()) out["subject"] = it }
+        @Suppress("DEPRECATION")
+        val stream = i.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
         if (i.type?.startsWith("image/") == true) {
-            @Suppress("DEPRECATION")
-            val uri = i.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
-            if (uri != null) saveImage(uri)?.let { out["image"] = it }
+            if (stream != null) saveImage(stream)?.let { out["image"] = it }
+        } else if (stream != null) {
+            // Any other file: keep a pointer so Vibe can check it (VirusTotal) without copying it
+            try { contentResolver.takePersistableUriPermission(stream, Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (_: Throwable) {}
+            out["file"] = stream.toString()
+            out["mime"] = i.type ?: "application/octet-stream"
+            try {
+                contentResolver.query(stream, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME, android.provider.OpenableColumns.SIZE), null, null, null)?.use { c ->
+                    if (c.moveToFirst()) {
+                        out["name"] = c.getString(0) ?: "file"
+                        out["size"] = c.getLong(1)
+                    }
+                }
+            } catch (_: Throwable) {}
         }
         return if (out.isEmpty()) null else out
     }
@@ -982,6 +1046,64 @@ class MainActivity : FlutterActivity() {
             }, null)
         try { browser.connect() } catch (_: Throwable) { finish(null); return }
         main.postDelayed({ finish(null) }, 7000)
+    }
+
+    private fun drawableBytes(d: android.graphics.drawable.Drawable): ByteArray {
+        val w = d.intrinsicWidth.takeIf { it > 0 } ?: 96
+        val h = d.intrinsicHeight.takeIf { it > 0 } ?: 96
+        val b = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val cv = android.graphics.Canvas(b)
+        d.setBounds(0, 0, w, h)
+        d.draw(cv)
+        val out = java.io.ByteArrayOutputStream()
+        b.compress(Bitmap.CompressFormat.PNG, 100, out)
+        return out.toByteArray()
+    }
+
+    private fun openSource(path: String?, uri: String?, pkg: String?): Pair<java.io.InputStream, Long>? {
+        if (!pkg.isNullOrEmpty()) {
+            val f = java.io.File(packageManager.getApplicationInfo(pkg, 0).sourceDir)
+            return f.inputStream() to f.length()
+        }
+        if (!path.isNullOrEmpty()) {
+            val f = java.io.File(path)
+            return f.inputStream() to f.length()
+        }
+        if (!uri.isNullOrEmpty()) {
+            val u = Uri.parse(uri)
+            val size = try {
+                contentResolver.query(u, arrayOf(android.provider.OpenableColumns.SIZE), null, null, null)?.use { c ->
+                    if (c.moveToFirst()) c.getLong(0) else -1L
+                } ?: -1L
+            } catch (_: Throwable) { -1L }
+            val ins = contentResolver.openInputStream(u) ?: return null
+            return ins to size
+        }
+        return null
+    }
+
+    private fun fingerprint(path: String?, uri: String?, pkg: String?): Map<String, Any>? {
+        val (ins, size) = openSource(path, uri, pkg) ?: return null
+        val md = java.security.MessageDigest.getInstance("SHA-256")
+        var total = 0L
+        ins.use {
+            val buf = ByteArray(1 shl 16)
+            while (true) {
+                val n = it.read(buf)
+                if (n <= 0) break
+                md.update(buf, 0, n)
+                total += n
+            }
+        }
+        val hex = md.digest().joinToString("") { b -> "%02x".format(b) }
+        return mapOf("sha256" to hex, "size" to (if (size > 0) size else total))
+    }
+
+    private fun copyForUpload(path: String?, uri: String?, pkg: String?): String? {
+        val (ins, _) = openSource(path, uri, pkg) ?: return null
+        val out = java.io.File(cacheDir, "vt_upload.bin")
+        ins.use { i -> out.outputStream().use { o -> i.copyTo(o, 1 shl 16) } }
+        return out.absolutePath
     }
 
     private fun saveDownload(path: String, name: String, mime: String): String? {
