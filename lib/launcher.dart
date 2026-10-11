@@ -8,7 +8,7 @@ import 'theme.dart';
 
 /// One installed app. In the UI it's a "user" in the DM list.
 /// Shown in settings and when you ask "what version is this".
-const vibeVersion = '0.25.0';
+const vibeVersion = '0.25.1';
 
 class AppEntry {
   final String label, pkg;
@@ -206,6 +206,13 @@ class Native {
     }
   }
   static Future<Map?> musicApp() => _c.invokeMethod<Map>('musicApp');
+  static Future<Map?> mediaState(String pkg) async {
+    try {
+      return await _c.invokeMethod<Map>('mediaState', {'package': pkg});
+    } catch (_) {
+      return null;
+    }
+  }
   static Future<bool> playMusic(String q, {String? pkg}) async =>
       await _c.invokeMethod<bool>('playMusic', {'query': q, 'package': pkg}) ?? false;
   static Future<bool> setAlarm(int h, int m, String label) async =>

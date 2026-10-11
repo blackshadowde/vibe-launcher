@@ -2217,22 +2217,29 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     // 2) Not on the phone: ask your music app to play it in the background
     if (VibePlayer.i.active) VibePlayer.i.cmd('stop'); // one player at a time
     setState(() => _thinking = true);
-    final sent = DateTime.now().millisecondsSinceEpoch;
+    final target0 = pkg ?? '${(await Native.musicApp())?['package'] ?? ''}';
+    final before = target0.isEmpty ? null : await Native.mediaState(target0);
     final r = await Native.playSilently(q, pkg: pkg);
     if (mounted) setState(() => _thinking = false);
     if (r != null) {
       final app = '${r['label']}';
       final target = '${r['package']}';
       _appSays(target, app, 'Playing "$q"…');
-      // If the app didn't actually start playing, open it the usual way
-      Future.delayed(const Duration(seconds: 7), () async {
-        if (!mounted) return;
-        final started = chat.msgs.reversed.take(15).any((x) => x.media && x.pkg == target && x.ts >= sent - 1000);
-        if (!started) {
-          _say('$app didn\'t start in the background, so I\'m opening it.');
-          await Native.playMusic(q, pkg: target);
+      // Watch the app for up to 15 s: playing / loading a different song = it worked
+      () async {
+        for (var i = 0; i < 15; i++) {
+          await Future.delayed(const Duration(seconds: 1));
+          if (!mounted) return;
+          final now = await Native.mediaState(target);
+          final st = (now?['state'] as num?)?.toInt() ?? 0;
+          final busy = st == 3 || st == 6 || st == 8 || (st >= 9 && st <= 11); // playing, buffering, connecting, skipping
+          final changed = before == null || '${now?['title']}' != '${before['title']}' || (before['state'] as num?)?.toInt() != 3;
+          if (busy && changed) return;
         }
-      });
+        if (!mounted) return;
+        _say('$app didn\'t start in the background, so I\'m opening it.');
+        await Native.playMusic(q, pkg: target);
+      }();
       return;
     }
     // 3) Last resort: open a music app by search
