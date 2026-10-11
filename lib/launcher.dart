@@ -8,7 +8,7 @@ import 'theme.dart';
 
 /// One installed app. In the UI it's a "user" in the DM list.
 /// Shown in settings and when you ask "what version is this".
-const vibeVersion = '0.24.0';
+const vibeVersion = '0.24.2';
 
 class AppEntry {
   final String label, pkg;
@@ -96,6 +96,7 @@ class Native {
 
   // On-phone AI (Gemini Nano)
   static Future<String> nanoStatus() async => await _c.invokeMethod<String>('nanoStatus') ?? 'unavailable';
+  static Future<Map> nanoInfo() async => Map.from(await _c.invokeMethod<Map>('nanoInfo') ?? const {});
   static Future<bool> nanoDownload() async => await _c.invokeMethod<bool>('nanoDownload') ?? false;
   static Future<String?> nanoAsk(String prompt, {String? image}) =>
       _c.invokeMethod<String>('nanoAsk', {'prompt': prompt, 'image': image});
