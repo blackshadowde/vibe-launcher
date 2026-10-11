@@ -8,7 +8,7 @@ import 'theme.dart';
 
 /// One installed app. In the UI it's a "user" in the DM list.
 /// Shown in settings and when you ask "what version is this".
-const vibeVersion = '0.26.2';
+const vibeVersion = '0.26.3';
 
 class AppEntry {
   final String label, pkg;
@@ -86,6 +86,18 @@ class Native {
   static Future<String?> saveDownload(String path, String name, String mime) =>
       _c.invokeMethod<String>('saveDownload', {'path': path, 'name': name, 'mime': mime});
   static Future<void> shareImage(String uri) => _c.invokeMethod('shareImage', {'uri': uri});
+  static Future<bool> shareText(String text, {String title = 'Share'}) async =>
+      await _c.invokeMethod<bool>('shareText', {'text': text, 'title': title}) ?? false;
+  /// {lat, lon, acc} or {error: denied / blocked / off / none}. [ask] shows the permission prompt.
+  static Future<Map> location({bool ask = false}) async {
+    try {
+      return Map.from(await _c.invokeMethod<Map>('location', {'ask': ask}).timeout(const Duration(seconds: 40)) ?? const {'error': 'none'});
+    } catch (e) {
+      return {'error': '$e'};
+    }
+  }
+  static Future<bool> locationPerm() async => await _c.invokeMethod<bool>('locationPerm') ?? false;
+  static Future<bool> openLocationSettings() async => await _c.invokeMethod<bool>('openLocationSettings') ?? false;
   static Future<bool> setWallpaper(String path, {bool lockOnly = false}) async =>
       await _c.invokeMethod<bool>('setWallpaper', {'path': path, 'lock': lockOnly}) ?? false;
 

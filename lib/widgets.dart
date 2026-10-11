@@ -1,5 +1,7 @@
 import 'dart:typed_data';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'launcher.dart';
 import 'theme.dart';
 
@@ -237,45 +239,289 @@ void showAppMenu(BuildContext context, AppEntry a, VoidCallback onOpen) {
 }
 
 /// Light Markdown for Gemini replies: **bold**, *italic*, `code`, bullets and headings.
-Widget richText(String text, VC c, {bool error = false}) {
-  final base = TextStyle(color: error ? VC.red : c.text, fontSize: 16, height: 1.35);
-  final lines = text.replaceAll('\r', '').split('\n');
-  final spans = <InlineSpan>[];
-  for (var i = 0; i < lines.length; i++) {
-    var line = lines[i];
-    var style = base;
-    final h = RegExp(r'^#{1,6}\s+').firstMatch(line);
-    if (h != null) {
-      line = line.substring(h.end);
-      style = base.copyWith(fontWeight: FontWeight.w800);
-    }
-    final b = RegExp(r'^(\s*)[*\-•]\s+').firstMatch(line);
-    if (b != null) line = '${b.group(1)}•  ${line.substring(b.end)}';
-    spans.addAll(_inline(line, style, c));
-    if (i < lines.length - 1) spans.add(const TextSpan(text: '\n'));
-  }
-  return Text.rich(TextSpan(children: spans));
+Widget richText(String text, VC c, {bool error = false, void Function(String url)? onScan}) =>
+    RichMsg(text: text, error: error, onScan: onScan);
+
+/// A link found in a message: kind is url / email / phone.
+class MsgLink {
+  final String kind, value, label;
+  const MsgLink(this.kind, this.value, this.label);
 }
 
-List<InlineSpan> _inline(String s, TextStyle style, VC c) {
-  final out = <InlineSpan>[];
-  final re = RegExp(r'\*\*(.+?)\*\*|`([^`]+)`|(?<![*\w])\*(?!\s)(.+?)(?<!\s)\*(?![*\w])');
-  var last = 0;
-  for (final m in re.allMatches(s)) {
-    if (m.start > last) out.add(TextSpan(text: s.substring(last, m.start), style: style));
-    if (m.group(1) != null) {
-      out.add(TextSpan(text: m.group(1), style: style.copyWith(fontWeight: FontWeight.w800)));
-    } else if (m.group(2) != null) {
-      out.add(TextSpan(
-          text: m.group(2),
-          style: style.copyWith(fontFamily: 'monospace', backgroundColor: c.card, fontSize: 14)));
+const linkBlue = Color(0xFF00A8FC);
+
+final _linkRe = RegExp(
+    r'\[([^\]\n]+)\]\(((?:https?://|www\.)[^\s)]+)\)' // 1-2: [text](url)
+    r'|((?:https?://|www\.)[^\s<>"]*[^\s<>"' "'" r'.,;:!?)\]*])' // 3: bare link
+    r'|([\w.+-]+@[\w-]+(?:\.[\w-]+)*\.[a-z]{2,})' // 4: email
+    r'|((?<![\w+/=.-])(?:\+\d{1,3}[\s-]?\d[\d\s-]{6,12}\d|(?:0)?[6-9]\d{4}[\s-]?\d{5})(?![\w/=-]))', // 5: phone
+    caseSensitive: false);
+
+String _fullUrl(String u) => u.toLowerCase().startsWith('www.') ? 'https://$u' : u;
+
+/// Every link, email and phone number in a text, in order, without repeats.
+List<MsgLink> findLinks(String text) {
+  final out = <MsgLink>[];
+  final seen = <String>{};
+  for (final m in _linkRe.allMatches(text)) {
+    MsgLink l;
+    if (m.group(2) != null) {
+      l = MsgLink('url', _fullUrl(m.group(2)!), m.group(1)!);
+    } else if (m.group(3) != null) {
+      l = MsgLink('url', _fullUrl(m.group(3)!), m.group(3)!);
+    } else if (m.group(4) != null) {
+      l = MsgLink('email', m.group(4)!, m.group(4)!);
     } else {
-      out.add(TextSpan(text: m.group(3), style: style.copyWith(fontStyle: FontStyle.italic)));
+      l = MsgLink('phone', m.group(5)!.replaceAll(RegExp(r'[\s-]'), ''), m.group(5)!);
     }
-    last = m.end;
+    if (seen.add('${l.kind}:${l.value}')) out.add(l);
   }
-  if (last < s.length) out.add(TextSpan(text: s.substring(last), style: style));
   return out;
+}
+
+/// Opens what a tap on a link means: websites open, emails go to your mail app, numbers ask what to do.
+void openLink(BuildContext context, MsgLink l) {
+  prefs.tap();
+  switch (l.kind) {
+    case 'url':
+      Native.openUrl(l.value);
+    case 'email':
+      Native.openUrl('mailto:${l.value}');
+    default:
+      showPhoneSheet(context, l.value);
+  }
+}
+
+Future<void> _messageNumber(String n) async {
+  if (prefs.messenger == 'whatsapp' && await Native.whatsapp(n, '')) return;
+  await Native.smsApp(n, '');
+}
+
+Widget _sheetRow(VC c, IconData icon, String label, VoidCallback onTap, {Color? color}) => ListTile(
+      leading: Icon(icon, color: color ?? c.muted),
+      title: Text(label, style: TextStyle(color: color ?? c.text, fontWeight: FontWeight.w600)),
+      onTap: () {
+        prefs.tap();
+        onTap();
+      },
+    );
+
+void _copied(BuildContext context) => ScaffoldMessenger.maybeOf(context)
+    ?.showSnackBar(const SnackBar(content: Text('Copied'), duration: Duration(seconds: 1)));
+
+void showPhoneSheet(BuildContext context, String number) {
+  final c = VC.of(context);
+  showModalBottomSheet(
+    context: context,
+    showDragHandle: true,
+    backgroundColor: c.chat,
+    builder: (ctx) => SafeArea(
+      child: Column(mainAxisSize: MainAxisSize.min, children: [
+        Padding(
+          padding: const EdgeInsets.only(bottom: 4),
+          child: Text(number, style: TextStyle(color: c.text, fontSize: 20, fontWeight: FontWeight.w800)),
+        ),
+        _sheetRow(c, Icons.call_rounded, 'Call', () {
+          Navigator.pop(ctx);
+          Native.call(number);
+        }, color: VC.green),
+        _sheetRow(c, Icons.chat_bubble_outline_rounded, 'Message', () {
+          Navigator.pop(ctx);
+          _messageNumber(number);
+        }),
+        _sheetRow(c, Icons.person_add_alt_1_rounded, 'Save contact', () {
+          Navigator.pop(ctx);
+          Native.addContact(number);
+        }),
+        _sheetRow(c, Icons.copy_rounded, 'Copy', () {
+          Navigator.pop(ctx);
+          Clipboard.setData(ClipboardData(text: number));
+          _copied(context);
+        }),
+      ]),
+    ),
+  );
+}
+
+/// Long-press on a message with links: copy the message, or open / copy / share / scan each link.
+void showMessageMenu(BuildContext context, String text, {void Function(String url)? onScan}) {
+  final c = VC.of(context);
+  final links = findLinks(text);
+  showModalBottomSheet(
+    context: context,
+    showDragHandle: true,
+    isScrollControlled: true,
+    backgroundColor: c.chat,
+    builder: (ctx) => SafeArea(
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxHeight: MediaQuery.of(ctx).size.height * 0.7),
+        child: ListView(shrinkWrap: true, children: [
+          _sheetRow(c, Icons.copy_rounded, 'Copy message', () {
+            Navigator.pop(ctx);
+            Clipboard.setData(ClipboardData(text: text));
+            _copied(context);
+          }),
+          for (final l in links) ...[
+            Divider(height: 1, color: c.divider),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 10, 16, 2),
+              child: Text(l.label, maxLines: 2, overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: linkBlue, fontWeight: FontWeight.w700)),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+              child: Wrap(spacing: 6, runSpacing: 6, children: [
+                ActionChip(
+                  avatar: Icon(l.kind == 'phone' ? Icons.call_rounded : l.kind == 'email' ? Icons.mail_outline_rounded : Icons.open_in_new_rounded,
+                      size: 16, color: c.text),
+                  label: Text(l.kind == 'phone' ? 'Call' : l.kind == 'email' ? 'Email' : 'Open'),
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    if (l.kind == 'phone') {
+                      Native.call(l.value);
+                    } else {
+                      openLink(context, l);
+                    }
+                  },
+                ),
+                ActionChip(
+                  avatar: Icon(Icons.copy_rounded, size: 16, color: c.text),
+                  label: const Text('Copy'),
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    Clipboard.setData(ClipboardData(text: l.value));
+                    _copied(context);
+                  },
+                ),
+                ActionChip(
+                  avatar: Icon(Icons.share_rounded, size: 16, color: c.text),
+                  label: const Text('Share'),
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    Native.shareText(l.value);
+                  },
+                ),
+                if (l.kind == 'url' && onScan != null)
+                  ActionChip(
+                    avatar: Icon(Icons.shield_outlined, size: 16, color: c.text),
+                    label: const Text('Scan with VirusTotal'),
+                    onPressed: () {
+                      Navigator.pop(ctx);
+                      onScan(l.value);
+                    },
+                  ),
+              ]),
+            ),
+          ],
+        ]),
+      ),
+    ),
+  );
+}
+
+/// Message text with **bold**, *italic*, `code`, # headings, • lists, and tappable links,
+/// emails and phone numbers.
+class RichMsg extends StatefulWidget {
+  final String text;
+  final bool error;
+  final void Function(String url)? onScan;
+  const RichMsg({super.key, required this.text, this.error = false, this.onScan});
+  @override
+  State<RichMsg> createState() => _RichMsgState();
+}
+
+class _RichMsgState extends State<RichMsg> {
+  final _recs = <TapGestureRecognizer>[];
+
+  void _clear() {
+    for (final r in _recs) {
+      r.dispose();
+    }
+    _recs.clear();
+  }
+
+  @override
+  void dispose() {
+    _clear();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    _clear();
+    final c = VC.of(context);
+    final base = TextStyle(color: widget.error ? VC.red : c.text, fontSize: 16, height: 1.35);
+    final lines = widget.text.replaceAll('\r', '').split('\n');
+    final spans = <InlineSpan>[];
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i];
+      var style = base;
+      final h = RegExp(r'^#{1,6}\s+').firstMatch(line);
+      if (h != null) {
+        line = line.substring(h.end);
+        style = base.copyWith(fontWeight: FontWeight.w800);
+      }
+      final b = RegExp(r'^(\s*)[*\-•]\s+').firstMatch(line);
+      if (b != null) line = '${b.group(1)}•  ${line.substring(b.end)}';
+      spans.addAll(_inline(line, style, c));
+      if (i < lines.length - 1) spans.add(const TextSpan(text: '\n'));
+    }
+    return Text.rich(TextSpan(children: spans));
+  }
+
+  List<InlineSpan> _inline(String s, TextStyle style, VC c) {
+    final out = <InlineSpan>[];
+    // Links first, so a * or _ inside a web address isn't read as formatting
+    var last = 0;
+    for (final m in _linkRe.allMatches(s)) {
+      var before = s.substring(last, m.start);
+      var end = m.end;
+      var st = style;
+      // **[menu](https://…)** → a bold link
+      if (before.endsWith('**') && s.startsWith('**', m.end)) {
+        before = before.substring(0, before.length - 2);
+        end = m.end + 2;
+        st = style.copyWith(fontWeight: FontWeight.w800);
+      }
+      if (before.isNotEmpty) out.addAll(_format(before, style, c));
+      final l = findLinks(m.group(0)!).firstOrNull;
+      if (l == null) {
+        out.add(TextSpan(text: m.group(0), style: st));
+      } else {
+        final rec = TapGestureRecognizer()..onTap = () => openLink(context, l);
+        _recs.add(rec);
+        out.add(TextSpan(
+          text: l.kind == 'url' && m.group(1) != null ? m.group(1) : m.group(0),
+          style: st.copyWith(color: linkBlue),
+          recognizer: rec,
+        ));
+      }
+      last = end;
+    }
+    if (last < s.length) out.addAll(_format(s.substring(last), style, c));
+    return out;
+  }
+
+  List<InlineSpan> _format(String s, TextStyle style, VC c) {
+    final out = <InlineSpan>[];
+    final re = RegExp(r'\*\*(.+?)\*\*|`([^`]+)`|(?<![*\w])\*(?!\s)(.+?)(?<!\s)\*(?![*\w])');
+    var last = 0;
+    for (final m in re.allMatches(s)) {
+      if (m.start > last) out.add(TextSpan(text: s.substring(last, m.start), style: style));
+      if (m.group(1) != null) {
+        out.add(TextSpan(text: m.group(1), style: style.copyWith(fontWeight: FontWeight.w800)));
+      } else if (m.group(2) != null) {
+        out.add(TextSpan(
+            text: m.group(2),
+            style: style.copyWith(fontFamily: 'monospace', backgroundColor: c.card, fontSize: 14)));
+      } else {
+        out.add(TextSpan(text: m.group(3), style: style.copyWith(fontStyle: FontStyle.italic)));
+      }
+      last = m.end;
+    }
+    if (last < s.length) out.add(TextSpan(text: s.substring(last), style: style));
+    return out;
+  }
 }
 
 /// Source links under a search answer.

@@ -189,6 +189,8 @@ class Brain {
       '• "accent green", "round icons on", "haptics off", "dim the wallpaper", "list my icon packs", "sort apps A to Z", "hide Facebook", "show hidden apps", "mute Instagram", "music updates off", "brief at 7:30", "messages use WhatsApp", "list Groq models", "back up now", "what version is this"\n'
       '• "play Blinding Lights": songs on your phone play right here; others play in your music app without opening it. "play my downloads", "play songs by The Weeknd", "play X on Spotify"\n'
       '• "dialer" or "keypad" for the dial pad; type a number on its own to call, message or save it; *123# codes work too\n'
+      '• Places: "where am I", "share my location", "restos near me", "bars nearby", "pharmacy open now", "cafes in Banjara Hills", "nearest petrol pump", "take me to Charminar"\n'
+      '• Links, emails and phone numbers in messages are tappable; long-press a message to copy, share or scan its links\n'
       '• Pick the AI per message: "gemini, …", "groq …", "cloudflare draw …", "nano …". Swipe-reply keeps talking to the same AI\n'
       '• VirusTotal: "scan WhatsApp", "is this app safe", "scan my apps", "check link https://…", or share any file to Vibe\n'
       '• App shortcuts: "Chrome incognito", "WhatsApp new group", "app updates", "shortcuts for Play Store" (long-press an app to see them)\n'

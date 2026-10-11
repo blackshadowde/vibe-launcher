@@ -9,6 +9,7 @@ import 'launcher.dart';
 import 'main.dart';
 import 'memory.dart';
 import 'people.dart';
+import 'places.dart';
 import 'player.dart';
 import 'imagegen.dart';
 import 'search.dart';
@@ -247,6 +248,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     if (await _musicCommands(text)) return;
     if (await _dialerCommands(text)) return;
     if (await _telegramCommands(text)) return;
+    if (await _placeCommands(text)) return;
     if (await _selfCommands(text)) return;
     if (await _appCommands(text)) return;
     if (await _dayCommands(text)) return;
@@ -989,6 +991,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
         ]);
       case 'player':
         return PlayerCard(card: card);
+      case 'where':
+        return WhereCard(card: card, onSearch: (q) => _send(q));
+      case 'places':
+        return PlacesCard(card: card);
       case 'file':
         final fname = '${card['name']}';
         final apk = fname.toLowerCase().endsWith('.apk');
@@ -2652,6 +2658,153 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     return false;
   }
 
+  // ---------- Places & "where am I" ----------
+  // Your exact position is used only for the map search (OpenStreetMap) and Google Maps links,
+  // never sent to any AI: place messages carry it inside cards, which AI context leaves out.
+  (double, double, double)? _fix;
+  DateTime _fixAt = DateTime(2000);
+
+  /// Where you are: a fresh fix, or (location off / not allowed) your weather city, marked approximate.
+  Future<(double, double, double, bool)?> _whereNow(String retry) async {
+    final f = _fix;
+    if (f != null && DateTime.now().difference(_fixAt).inSeconds < 90) return (f.$1, f.$2, f.$3, false);
+    final r = await Native.location(ask: true);
+    if (r['lat'] is num && r['lon'] is num) {
+      final nf = ((r['lat'] as num).toDouble(), (r['lon'] as num).toDouble(), (r['acc'] as num?)?.toDouble() ?? 0.0);
+      _fix = nf;
+      _fixAt = DateTime.now();
+      return (nf.$1, nf.$2, nf.$3, false);
+    }
+    final err = '${r['error']}';
+    final la = prefs.lat, lo = prefs.lon;
+    final city = la != null && lo != null;
+    final why = switch (err) {
+      'off' => 'Your phone\'s location is off.',
+      'denied' => 'Vibe isn\'t allowed to use your location.',
+      'blocked' => 'Location is blocked for Vibe. Allow it in Vibe\'s app info → Permissions → Location ("Only while using the app").',
+      'none' => 'I couldn\'t get a location fix just now. Try again near a window.',
+      _ => 'I couldn\'t get your location ($err).',
+    };
+    _say(city ? '$why Using your weather city (${prefs.city.split(',').first}) for now.' : why, card: {
+      'type': 'ask',
+      'state': 'ask',
+      'retry': retry,
+      'buttons': [
+        if (err == 'off') {'label': 'Turn on location', 'do': 'locsettings', 'primary': true},
+        if (err == 'blocked') {'label': 'Open app info', 'do': 'locappinfo', 'primary': true},
+        {'label': 'Try again', 'do': 'locretry', 'primary': err != 'off' && err != 'blocked'},
+      ],
+    });
+    if (la == null || lo == null) return null;
+    return (la, lo, 0.0, true);
+  }
+
+  String _capWords(String s) => s.split(' ').map((w) => w.isEmpty ? w : w[0].toUpperCase() + w.substring(1)).join(' ');
+
+  /// "where am I", "share my location", "restos near me", "bars nearby", "atm open now",
+  /// "cafes in banjara hills", "biryani near me", "nearest petrol pump", "kfc near me"
+  Future<bool> _placeCommands(String text) async {
+    final cmd = Places.parse(text);
+    if (cmd == null) return false;
+    setState(() => _thinking = true);
+    try {
+      await _runPlaces(cmd, text);
+    } catch (e, st) {
+      noteError(e, st, during: 'places');
+    } finally {
+      if (mounted) setState(() => _thinking = false);
+    }
+    return true;
+  }
+
+  Future<void> _runPlaces(PlaceCmd cmd, String text) async {
+    if (cmd.kind == 'where' || cmd.kind == 'share') {
+      final w = await _whereNow(text);
+      if (w == null) return;
+      final (hla, hlo, acc, approx) = w;
+      final a = approx ? null : await Places.reverse(hla, hlo);
+      _say(approx ? '📍 Roughly here:' : '📍 You\'re here:', card: {
+        'type': 'where',
+        'lat': hla,
+        'lon': hlo,
+        'acc': acc,
+        'approx': approx,
+        ...?a,
+      });
+      if (cmd.kind == 'share') await Places.shareHere(hla, hlo, '${a?['area'] ?? ''}');
+      return;
+    }
+    double la, lo;
+    String near;
+    if (cmd.area.isNotEmpty) {
+      final base = _fix;
+      final g = await Places.findArea(cmd.area, la: base?.$1 ?? prefs.lat, lo: base?.$2 ?? prefs.lon);
+      if (g == null) {
+        _say('I couldn\'t find "${cmd.area}" on the map. Try a landmark or the area\'s full name.');
+        return;
+      }
+      near = 'near ${g.$1}';
+      la = g.$2;
+      lo = g.$3;
+    } else {
+      final w = await _whereNow(text);
+      if (w == null) return;
+      la = w.$1;
+      lo = w.$2;
+      near = w.$4 ? 'around ${prefs.city.split(',').first}' : 'near you';
+    }
+    final cat = cmd.cat;
+    final named = cmd.kind == 'named' || cat == null;
+    final title = named
+        ? _capWords(cmd.name)
+        : [if (cmd.cuisine.isNotEmpty) _capWords(cmd.cuisine), cat!.label, if (cmd.openNow) 'open now'].join(' · ');
+    final emoji = named ? '📍' : cat!.emoji;
+    final query = named ? cmd.name : (cmd.cuisine.isNotEmpty ? '${cmd.cuisine} ${cat!.label}' : cat!.label);
+    List<Place> list;
+    try {
+      list = named
+          ? await Places.named(cmd.name, la, lo)
+          : await Places.nearby(cat!, la, lo, cuisine: cmd.cuisine, openNow: cmd.openNow);
+    } catch (e) {
+      _say('The map search isn\'t answering right now. Try again in a moment, or search in Google Maps.', card: {
+        'type': 'ask',
+        'state': 'ask',
+        'q': query,
+        'lat': la,
+        'lon': lo,
+        'retry': text,
+        'buttons': [
+          {'label': 'Search in Google Maps', 'do': 'mapsearch', 'primary': true},
+          {'label': 'Try again', 'do': 'locretry'},
+        ],
+      });
+      return;
+    }
+    if (list.isEmpty) {
+      _say('I couldn\'t find any $title $near on OpenStreetMap. Google Maps may know more.', card: {
+        'type': 'ask',
+        'state': 'ask',
+        'q': query,
+        'lat': la,
+        'lon': lo,
+        'buttons': [
+          {'label': 'Search in Google Maps', 'do': 'mapsearch', 'primary': true},
+        ],
+      });
+      return;
+    }
+    _say('Found ${list.length} ${list.length == 1 ? 'place' : 'places'} $near. Closest first:', card: {
+      'type': 'places',
+      'title': title,
+      'emoji': emoji,
+      'near': near,
+      'lat': la,
+      'lon': lo,
+      'query': query,
+      'items': [for (final p in list) p.toMap()],
+    });
+  }
+
   // ---------- Dial pad ----------
   void _openDialer([String number = '']) {
     _focus.unfocus();
@@ -3263,7 +3416,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
 
   void _onAsk(Msg m, String action) {
     // Buttons you can use again and again (call, open…) stay active; one-time choices lock
-    const repeat = {'vtsite', 'upd_aicore', 'upd_pcs', 'nano_check', 'numcall', 'nummsg', 'numsave', 'numpad', 'tgfileopen', 'tgdownloads', 'tgopen', 'tgstart'};
+    const repeat = {'vtsite', 'upd_aicore', 'upd_pcs', 'nano_check', 'numcall', 'nummsg', 'numsave', 'numpad', 'tgfileopen', 'tgdownloads', 'tgopen', 'tgstart', 'locsettings', 'locappinfo', 'locretry', 'mapsearch'};
     if (!repeat.contains(action)) _setCard(m, Map.from(m.card!)..['state'] = action);
     switch (action) {
       case 'nano_models':
@@ -3291,6 +3444,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
         }
       case 'tgfileopen':
         Native.openFile('${m.card!['uri']}', '${m.card!['mime']}');
+      case 'locsettings':
+        Native.openLocationSettings();
+      case 'locappinfo':
+        Native.appInfo('com.vibe.vibe_launcher');
+      case 'locretry':
+        _fix = null;
+        _placeCommands('${m.card!['retry'] ?? 'where am i'}');
+      case 'mapsearch':
+        Places.showAllOnMap('${m.card!['q']}', (m.card!['lat'] as num?)?.toDouble() ?? 0, (m.card!['lon'] as num?)?.toDouble() ?? 0);
       case 'tgdownloads':
         _openTelegramChats(tab: 2);
       case 'tgjoin':
@@ -4614,7 +4776,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
             ? Text(m.text, style: TextStyle(color: c.text, fontSize: 15, height: 1.35))
             : m.isNotif
             ? Text(m.text, style: TextStyle(color: c.muted, fontSize: 15, height: 1.35))
-            : richText(m.text, c, error: m.error),
+            : richText(m.text, c, error: m.error, onScan: _vtUrl),
       if (m.links.isNotEmpty) linkChips(m.links, c),
       for (final p in m.apps)
         if (_byPkg(p) case final a?)
@@ -4733,6 +4895,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
         behavior: HitTestBehavior.opaque,
         onLongPress: () {
           prefs.heavy();
+          // With links: a menu to open / copy / share / scan them; otherwise copy straight away
+          if (findLinks(m.text).isNotEmpty) {
+            showMessageMenu(context, m.text, onScan: _vtUrl);
+            return;
+          }
           Clipboard.setData(ClipboardData(text: m.text));
           ScaffoldMessenger.maybeOf(context)
               ?.showSnackBar(const SnackBar(content: Text('Copied'), duration: Duration(seconds: 1)));

@@ -24,7 +24,7 @@ class SettingsPage extends StatelessWidget {
     (Icons.contrast_rounded, 'Appearance', 'Light/dark, accent, wallpaper, icon packs & haptics', {'APPEARANCE', 'LOOK', 'FEEL'}),
     (Icons.apps_rounded, 'Apps', 'Sorting & hidden apps', {'APPS'}),
     (Icons.notifications_rounded, 'Notifications', 'Notifications in chat, music & muted apps', {'NOTIFICATIONS'}),
-    (Icons.contacts_rounded, 'People', 'Contacts, calls, SMS & default messenger', {'PEOPLE'}),
+    (Icons.contacts_rounded, 'People', 'Contacts, calls, SMS, location & default messenger', {'PEOPLE'}),
     (Icons.send_rounded, 'Telegram', 'Channels, download bots & downloads', {'TELEGRAM'}),
     (Icons.manage_search_rounded, 'Search & mail', 'Global search, SMS & files access, Gmail', {'SEARCH'}),
     (Icons.wb_sunny_rounded, 'Daily brief', 'Brief time, city for weather & calendar', {'DAILY BRIEF'}),
@@ -212,6 +212,28 @@ class SettingsPage extends StatelessWidget {
                   },
                 );
               },
+            ),
+            FutureBuilder<bool>(
+              future: Native.locationPerm(),
+              builder: (_, snap) => ListTile(
+                leading: Icon(Icons.location_on_rounded, color: c.muted),
+                title: Text('Location', style: TextStyle(color: c.text)),
+                subtitle: Text(
+                    snap.data == true
+                        ? 'Allowed while using Vibe · for "where am I" & places nearby. Never sent to AI'
+                        : 'Not allowed: tap to allow. Used only for "where am I" & places nearby',
+                    style: TextStyle(color: snap.data == true ? VC.green : VC.yellow)),
+                trailing: Icon(Icons.chevron_right_rounded, color: c.faint),
+                onTap: () async {
+                  if (snap.data == true) {
+                    await Native.appInfo('com.vibe.vibe_launcher');
+                  } else {
+                    final r = await Native.location(ask: true);
+                    if (r['error'] == 'blocked') await Native.appInfo('com.vibe.vibe_launcher');
+                  }
+                  prefs.refresh();
+                },
+              ),
             ),
             _radio(c, '"Message someone" uses WhatsApp', prefs.messenger == 'whatsapp',
                 () => prefs.setMessenger('whatsapp')),
