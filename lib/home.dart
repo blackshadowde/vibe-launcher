@@ -17,6 +17,7 @@ import 'privacy.dart';
 import 'backup.dart';
 import 'day.dart';
 import 'dialer.dart';
+import 'files.dart';
 import 'sched.dart';
 import 'profile_sheet.dart';
 import 'settings_page.dart';
@@ -176,6 +177,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
 
   void _goHome() {
     navKey.currentState?.popUntil((r) => r.isFirst);
+    if (FsPane.i.open) FsPane.i.close();
     _closeDrawer();
     _focus.unfocus();
     _toBottom();
@@ -249,6 +251,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     if (await _dialerCommands(text)) return;
     if (await _telegramCommands(text)) return;
     if (await _placeCommands(text)) return;
+    if (await _fs.run(text)) return;
     if (await _selfCommands(text)) return;
     if (await _appCommands(text)) return;
     if (await _dayCommands(text)) return;
@@ -995,6 +998,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
         return WhereCard(card: card, onSearch: (q) => _send(q));
       case 'places':
         return PlacesCard(card: card);
+      case 'term':
+        return FsTermCard(card: card, onEdit: _openEditor);
       case 'file':
         final fname = '${card['name']}';
         final apk = fname.toLowerCase().endsWith('.apk');
@@ -2658,6 +2663,26 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     return false;
   }
 
+  // ---------- Files: ls, cd, find, rm… and "list the files in downloads" ----------
+  late final FsRunner _fs = FsRunner(
+    say: (String t, {Map? card, bool error = false}) => _say(t, card: card, error: error),
+    scan: (path, name) => _vtCheck(path: path, title: name),
+    edit: _openEditor,
+    isApp: (name) {
+      final f = Brain.match(Brain.norm(name), _apps);
+      return f.isNotEmpty && f.first.score >= 80;
+    },
+  );
+
+  void _openEditor(String path) {
+    _focus.unfocus();
+    navKey.currentState
+        ?.push(MaterialPageRoute(builder: (_) => FileEditorPage(path: path)))
+        .then((_) {
+      if (FsPane.i.open) FsPane.i.refresh();
+    });
+  }
+
   // ---------- Places & "where am I" ----------
   // Your exact position is used only for the map search (OpenStreetMap) and Google Maps links,
   // never sent to any AI: place messages carry it inside cards, which AI context leaves out.
@@ -3008,7 +3033,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     if (Telegram.linkIn(text) != null && await _telegramLink(text)) return true;
     final low = Brain.norm(text);
     if (Telegram.i.configured) {
-      if (RegExp(r'^(my |show |open )*(telegram )?downloads?$|^telegram (files|downloads)$').hasMatch(low) && low.contains('download') ||
+      // Plain "downloads" opens the Download folder (file commands); this is Telegram's own list
+      if (RegExp(r'^(my |show |open )*telegram downloads?$|^telegram (files|downloads)$').hasMatch(low) ||
           low == 'telegram downloads' || low == 'telegram files') {
         _openTelegramChats(tab: 2);
         return true;
@@ -3416,7 +3442,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
 
   void _onAsk(Msg m, String action) {
     // Buttons you can use again and again (call, open…) stay active; one-time choices lock
-    const repeat = {'vtsite', 'upd_aicore', 'upd_pcs', 'nano_check', 'numcall', 'nummsg', 'numsave', 'numpad', 'tgfileopen', 'tgdownloads', 'tgopen', 'tgstart', 'locsettings', 'locappinfo', 'locretry', 'mapsearch'};
+    const repeat = {'vtsite', 'upd_aicore', 'upd_pcs', 'nano_check', 'numcall', 'nummsg', 'numsave', 'numpad', 'tgfileopen', 'tgdownloads', 'tgopen', 'tgstart', 'locsettings', 'locappinfo', 'locretry', 'mapsearch', 'fsopen', 'fsshare', 'fsedit', 'fstrash', 'fsperm'};
     if (!repeat.contains(action)) _setCard(m, Map.from(m.card!)..['state'] = action);
     switch (action) {
       case 'nano_models':
@@ -3444,6 +3470,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
         }
       case 'tgfileopen':
         Native.openFile('${m.card!['uri']}', '${m.card!['mime']}');
+      case 'fsperm' || 'fsundo' || 'fstrash' || 'fsemptytrash' || 'cancelfs' || 'fsopen' || 'fsshare' || 'fsedit':
+        _fs.onAsk(action, m.card!);
       case 'locsettings':
         Native.openLocationSettings();
       case 'locappinfo':
@@ -4460,7 +4488,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
         child: PopScope(
           canPop: false, // Back never closes the launcher
           onPopInvokedWithResult: (_, __) {
-            if (_replyTo != null) {
+            if (FsPane.i.open) {
+              FsPane.i.back();
+            } else if (_replyTo != null) {
               setState(() => _replyTo = null);
             } else if (_dc.value > 0) {
               _closeDrawer();
@@ -4490,6 +4520,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
                     if (_isDefault && !_notifAccess && _loaded && prefs.showNotifs) _notifBanner(),
                     Expanded(child: _timeline(c)),
                     _livePanel(c),
+                    FilesPaneHost(onScan: (path, name) => _vtCheck(path: path, title: name), onEdit: _openEditor),
                     _inputBar(c),
                   ]),
                 ),

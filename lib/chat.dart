@@ -191,6 +191,7 @@ class Brain {
       '• "dialer" or "keypad" for the dial pad; type a number on its own to call, message or save it; *123# codes work too\n'
       '• Places: "where am I", "share my location", "restos near me", "bars nearby", "pharmacy open now", "cafes in Banjara Hills", "nearest petrol pump", "take me to Charminar"\n'
       '• Links, emails and phone numbers in messages are tappable; long-press a message to copy, share or scan its links\n'
+      '• Files: `ls`, `cd Download`, `cd ..`, `find *.pdf`, `rm movie.mp3`, `nano notes.txt`, or "list the files in downloads", "search file named resume", "share movie.mp3", "delete movie.mp3", "edit text.html". Say "help files" for all of them\n'
       '• Pick the AI per message: "gemini, …", "groq …", "cloudflare draw …", "nano …". Swipe-reply keeps talking to the same AI\n'
       '• VirusTotal: "scan WhatsApp", "is this app safe", "scan my apps", "check link https://…", or share any file to Vibe\n'
       '• App shortcuts: "Chrome incognito", "WhatsApp new group", "app updates", "shortcuts for Play Store" (long-press an app to see them)\n'

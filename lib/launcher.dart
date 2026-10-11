@@ -8,7 +8,7 @@ import 'theme.dart';
 
 /// One installed app. In the UI it's a "user" in the DM list.
 /// Shown in settings and when you ask "what version is this".
-const vibeVersion = '0.26.3';
+const vibeVersion = '0.27.0';
 
 class AppEntry {
   final String label, pkg;
@@ -96,6 +96,35 @@ class Native {
       return {'error': '$e'};
     }
   }
+  // ---------- Files (ls, cd, find, grep, rm…) ----------
+  static Map _m(Object? r) => r is Map ? Map.from(r) : {'error': 'none'};
+  static Future<Map> fsHome() async => _m(await _c.invokeMethod('fsHome'));
+  static Future<Map> fsList(String path, {bool hidden = false}) async =>
+      _m(await _c.invokeMethod('fsList', {'path': path, 'hidden': hidden}));
+  static Future<Map> fsFind(
+          {required String root, String? like, String? mime, List<String> exts = const [], int min = 0, int max = 0,
+          int newer = 0, int older = 0, bool dirs = false, int limit = 200}) async =>
+      _m(await _c.invokeMethod('fsFind', {
+        'root': root, 'like': like, 'mime': mime, 'exts': exts, 'min': min, 'max': max,
+        'newer': newer, 'older': older, 'dirs': dirs, 'limit': limit,
+      }));
+  static Future<Map> fsGrep(String path, String text, {bool caseSensitive = false}) async =>
+      _m(await _c.invokeMethod('fsGrep', {'path': path, 'text': text, 'case': caseSensitive}));
+  static Future<Map> fsDu(String path) async => _m(await _c.invokeMethod('fsDu', {'path': path}));
+  static Future<List<Map>> fsDf() async => await _c.invokeListMethod<Map>('fsDf') ?? [];
+  static Future<Map> fsRead(String path, {int max = 524288}) async =>
+      _m(await _c.invokeMethod('fsRead', {'path': path, 'max': max}));
+  static Future<bool> fsWrite(String path, String text, {bool append = false}) async =>
+      await _c.invokeMethod<bool>('fsWrite', {'path': path, 'text': text, 'append': append}) ?? false;
+  static Future<Map> fsOp(String op, {List<String> paths = const [], String? dest, String? name}) async =>
+      _m(await _c.invokeMethod('fsOp', {'op': op, 'paths': paths, 'dest': dest, 'name': name}));
+  static Future<List<Map>> fsTrash() async => await _c.invokeListMethod<Map>('fsTrash') ?? [];
+  static Future<Uint8List?> fsThumb(String path, {int size = 160}) =>
+      _c.invokeMethod<Uint8List>('fsThumb', {'path': path, 'size': size});
+  static Future<bool> fsShare(List<String> paths) async =>
+      await _c.invokeMethod<bool>('fsShare', {'paths': paths}) ?? false;
+  static Future<String> fsOpen(String path) async => await _c.invokeMethod<String>('fsOpen', {'path': path}) ?? 'noapp';
+
   static Future<bool> locationPerm() async => await _c.invokeMethod<bool>('locationPerm') ?? false;
   static Future<bool> openLocationSettings() async => await _c.invokeMethod<bool>('openLocationSettings') ?? false;
   static Future<bool> setWallpaper(String path, {bool lockOnly = false}) async =>
