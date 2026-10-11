@@ -59,6 +59,7 @@ jobs:
               implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
               implementation("androidx.media3:media3-exoplayer:1.4.1")
               implementation("androidx.media3:media3-session:1.4.1")
+              implementation("androidx.core:core-ktx:1.13.1")
           }
 
           // 64-bit ARM phones only (all modern phones): keeps the Telegram library from tripling the APK size
