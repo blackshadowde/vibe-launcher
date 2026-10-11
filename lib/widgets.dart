@@ -1,3 +1,4 @@
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'launcher.dart';
 import 'theme.dart';
@@ -158,6 +159,9 @@ class AppCard extends StatelessWidget {
 }
 
 /// Long-press menu for an app.
+/// Set by the home screen: "Scan with VirusTotal" in the app menu.
+void Function(AppEntry)? onScanApp;
+
 void showAppMenu(BuildContext context, AppEntry a, VoidCallback onOpen) {
   prefs.heavy();
   final c = VC.of(context);
@@ -187,8 +191,40 @@ void showAppMenu(BuildContext context, AppEntry a, VoidCallback onOpen) {
           ),
           const SizedBox(width: 20),
         ]),
-        const SizedBox(height: 12),
+        const SizedBox(height: 8),
+        // The app's own shortcuts (e.g. Chrome → New incognito tab), when Vibe is the Home app
+        FutureBuilder<List<Map>?>(
+          future: Native.shortcuts(pkg: a.pkg),
+          builder: (_, snap) {
+            final list = snap.data ?? const [];
+            if (list.isEmpty) return const SizedBox.shrink();
+            return Column(children: [
+              for (final sc in list.take(5))
+                ListTile(
+                  dense: true,
+                  leading: SizedBox(
+                    width: 28,
+                    height: 28,
+                    child: FutureBuilder<Uint8List?>(
+                      future: Native.shortcutIcon(a.pkg, '${sc['id']}'),
+                      builder: (_, i) => i.data == null
+                          ? Icon(Icons.bolt_rounded, color: c.muted)
+                          : Image.memory(i.data!, width: 28, height: 28),
+                    ),
+                  ),
+                  title: Text('${sc['label']}', style: TextStyle(color: c.text, fontWeight: FontWeight.w500)),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    Native.startShortcut(a.pkg, '${sc['id']}');
+                  },
+                ),
+              Divider(height: 8, color: c.divider),
+            ]);
+          },
+        ),
         item(Icons.open_in_new_rounded, 'Open', () { Navigator.pop(ctx); onOpen(); }),
+        if (onScanApp != null)
+          item(Icons.shield_outlined, 'Scan with VirusTotal', () { Navigator.pop(ctx); onScanApp!(a); }),
         item(Icons.info_outline_rounded, 'App info', () { Navigator.pop(ctx); Native.appInfo(a.pkg); }),
         item(Icons.visibility_off_outlined, 'Hide from list',
             () { Navigator.pop(ctx); prefs.toggleHidden(a.pkg); }),

@@ -30,6 +30,7 @@ class SettingsPage extends StatelessWidget {
     (Icons.wb_sunny_rounded, 'Daily brief', 'Brief time, city for weather & calendar', {'DAILY BRIEF'}),
     (Icons.auto_awesome_rounded, 'Vibe AI', 'On-phone AI, Gemini, Groq, Cloudflare, backup AI & pictures', {'ON-PHONE AI', 'MAIN AI', 'VIBE AI (GEMINI)', 'GROQ', 'PICTURES'}),
     (Icons.shield_rounded, 'Privacy', 'What stays on your phone', {'PRIVACY'}),
+    (Icons.security_rounded, 'Security', 'VirusTotal checks for files, apps & links', {'SECURITY'}),
     (Icons.psychology_rounded, 'Memory', 'What Vibe remembers about you', {'MEMORY'}),
     (Icons.cloud_off_rounded, 'Offline mode', 'Use no internet; answer later', {'OFFLINE MODE'}),
     (Icons.settings_backup_restore_rounded, 'Backup & restore', 'Save or bring back chat, memory & settings', {'BACKUP'}),
@@ -542,6 +543,36 @@ class SettingsPage extends StatelessWidget {
                   'Cloudflare\'s free daily quota, so your descriptions are sent to Cloudflare. '
                   'Your account ID is on the right side of your Cloudflare dashboard home page.',
                   style: TextStyle(color: c.faint, fontSize: 13, height: 1.35)),
+            ),
+          ]),
+          ],
+          if (show.contains('SECURITY')) ...[
+          _section(c, 'VIRUSTOTAL'),
+          _group(c, [
+            ListTile(
+              leading: Icon(Icons.key_rounded, color: c.muted),
+              title: Text('VirusTotal API key', style: TextStyle(color: c.text)),
+              subtitle: Text(
+                  prefs.vtKey.isEmpty
+                      ? 'Not set · free at virustotal.com'
+                      : 'Set (…${prefs.vtKey.substring(prefs.vtKey.length < 4 ? 0 : prefs.vtKey.length - 4)}). Stored encrypted on this phone',
+                  style: TextStyle(color: c.faint)),
+              trailing: Icon(Icons.chevron_right_rounded, color: c.faint),
+              onTap: () => _editText(context, 'VirusTotal API key', prefs.vtKey, prefs.setVtKey, hint: '64 letters and numbers', secret: true),
+            ),
+            ListTile(
+              leading: Icon(Icons.open_in_new_rounded, color: c.muted),
+              title: Text('Get a free key', style: TextStyle(color: c.text)),
+              subtitle: Text('virustotal.com → your profile → API Key', style: TextStyle(color: c.faint)),
+              onTap: () => Native.openUrl('https://www.virustotal.com/gui/my-apikey'),
+            ),
+            ListTile(
+              leading: Icon(Icons.info_outline_rounded, color: c.muted),
+              title: Text('How checks work', style: TextStyle(color: c.text)),
+              subtitle: Text(
+                  'Vibe sends only a file\'s fingerprint first; the file stays on your phone. It uploads only when you tap '
+                  'Upload & scan, and uploaded files are shared with security companies. Free plan: 4 checks a minute, 500 a day.',
+                  style: TextStyle(color: c.faint)),
             ),
           ]),
           ],

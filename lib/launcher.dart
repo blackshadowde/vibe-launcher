@@ -8,7 +8,7 @@ import 'theme.dart';
 
 /// One installed app. In the UI it's a "user" in the DM list.
 /// Shown in settings and when you ask "what version is this".
-const vibeVersion = '0.24.2';
+const vibeVersion = '0.25.0';
 
 class AppEntry {
   final String label, pkg;
@@ -171,6 +171,23 @@ class Native {
       await _c.invokeMethod<bool>('openUrl', {'url': url, 'package': pkg}) ?? false;
   static Future<bool> openSettingsPage(String action) async =>
       await _c.invokeMethod<bool>('openSettingsPage', {'action': action}) ?? false;
+  // App shortcuts (needs Vibe to be the Home app)
+  static Future<List<Map>?> shortcuts({String? pkg}) async {
+    try {
+      return await _c.invokeListMethod<Map>('shortcuts', {'package': pkg});
+    } catch (_) {
+      return null;
+    }
+  }
+  static Future<Uint8List?> shortcutIcon(String pkg, String id) =>
+      _c.invokeMethod<Uint8List>('shortcutIcon', {'package': pkg, 'id': id});
+  static Future<bool> startShortcut(String pkg, String id) async =>
+      await _c.invokeMethod<bool>('startShortcut', {'package': pkg, 'id': id}) ?? false;
+  // VirusTotal helpers: fingerprint (nothing leaves the phone) and a temporary copy for an upload you approve
+  static Future<Map?> sha256({String? path, String? uri, String? pkg}) =>
+      _c.invokeMethod<Map>('sha256', {'path': path, 'uri': uri, 'package': pkg});
+  static Future<String?> readForUpload({String? path, String? uri, String? pkg}) =>
+      _c.invokeMethod<String>('readForUpload', {'path': path, 'uri': uri, 'package': pkg});
   // Vibe's own player
   static Future<Map> requestAudio() async =>
       Map.from(await _c.invokeMethod<Map>('requestAudio') ?? const {});
@@ -261,6 +278,7 @@ class Prefs extends ChangeNotifier {
   // Pictures (Cloudflare Workers AI, free daily quota)
   String cfAccount = '';
   String cfToken = '';
+  String vtKey = ''; // VirusTotal, kept in the vault
   String tgApiId = ''; // Telegram (my.telegram.org), kept in the vault
   String tgApiHash = '';
   List<int> queue = []; // timestamps of your questions waiting for internet
@@ -322,6 +340,7 @@ class Prefs extends ChangeNotifier {
     try {
       gmailPass = await _secret('gmailPass');
     } catch (_) {}
+    vtKey = await _secret('vtKey');
     tgApiId = await _secret('tgApiId');
     tgApiHash = await _secret('tgApiHash');
     queue = (_p.getStringList('queue') ?? []).map(int.parse).toList();
@@ -391,6 +410,12 @@ class Prefs extends ChangeNotifier {
     cfToken = token.trim();
     _p.setString('cfAccount', cfAccount);
     _vault.write(key: 'cfToken', value: cfToken).catchError((_) {});
+    notifyListeners();
+  }
+
+  void setVtKey(String v) {
+    vtKey = v.trim();
+    _vault.write(key: 'vtKey', value: vtKey).catchError((_) {});
     notifyListeners();
   }
 

@@ -22,6 +22,7 @@ import 'settings_page.dart';
 import 'telegram.dart';
 import 'telegram_ui.dart';
 import 'theme.dart';
+import 'vt.dart';
 import 'widgets.dart';
 
 /// Home screen: a chat with Vibe. Tell it what to open.
@@ -68,9 +69,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     Native.onFired = _onFired;
     appErrors.addListener(_onAppError);
     Native.onPlayer = VibePlayer.i.onEvent;
+    onScanApp = (a) => _vtCheck(pkg: a.pkg, title: a.label);
     Telegram.i.onIncoming = _onTelegram;
     Telegram.i.onDownloaded = (d) {
       if (!mounted) return;
+      if (VirusTotal.ready && d['uri'] != null) {
+        Future.delayed(const Duration(seconds: 1), () => _vtCheck(uri: '${d['uri']}', title: '${d['name']}', quiet: true));
+      }
       _say('⬇️ Downloaded **${d['name']}** to Download/Vibe Telegram.', card: {
         'type': 'ask',
         'state': 'ask',
@@ -153,6 +158,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     setState(() {
       _apps = list;
       _isDefault = def;
+      _loadShortcuts();
       _notifAccess = access;
       _loaded = true;
     });
@@ -230,6 +236,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
       _say(mem);
       return;
     }
+    if (await _shortcutCommands(text)) return;
+    if (await _vtCommands(text)) return;
     if (await _musicCommands(text)) return;
     if (await _dialerCommands(text)) return;
     if (await _telegramCommands(text)) return;
@@ -975,6 +983,78 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
         ]);
       case 'player':
         return PlayerCard(card: card);
+      case 'vt':
+        final v = '${card['verdict']}';
+        final col = v == 'clean' ? VC.green : v == 'flagged' ? VC.red : v == 'suspicious' ? VC.yellow : c.muted;
+        final icon = v == 'clean'
+            ? Icons.verified_user_rounded
+            : v == 'flagged'
+                ? Icons.gpp_bad_rounded
+                : v == 'suspicious'
+                    ? Icons.gpp_maybe_rounded
+                    : v == 'unknown'
+                        ? Icons.help_outline_rounded
+                        : Icons.error_outline_rounded;
+        final mal = (card['mal'] as num?)?.toInt() ?? 0, sus = (card['sus'] as num?)?.toInt() ?? 0;
+        final total = (card['total'] as num?)?.toInt() ?? 0;
+        final head = switch (v) {
+          'clean' => 'Clean · 0/$total engines',
+          'flagged' => 'Dangerous · $mal/$total engines flagged it',
+          'suspicious' => 'Be careful · ${mal + sus}/$total engines flagged it',
+          'unknown' => 'VirusTotal has never seen this',
+          _ => 'Couldn\'t check',
+        };
+        final src = card['source'] as Map?;
+        return Container(
+          margin: const EdgeInsets.only(top: 6),
+          constraints: const BoxConstraints(maxWidth: 380),
+          decoration: BoxDecoration(
+              color: c.pane, borderRadius: BorderRadius.circular(10), border: Border.all(color: col.withValues(alpha: 0.6))),
+          padding: const EdgeInsets.all(12),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(children: [
+              Icon(icon, color: col, size: 26),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text('${card['title']}'.isEmpty ? (card['kind'] == 'url' ? 'Link' : 'File') : '${card['title']}',
+                      maxLines: 2, overflow: TextOverflow.ellipsis,
+                      style: TextStyle(color: c.text, fontWeight: FontWeight.w700, fontSize: 15)),
+                  Text(head, style: TextStyle(color: col, fontWeight: FontWeight.w600, fontSize: 13)),
+                ]),
+              ),
+            ]),
+            if ('${card['label']}'.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Text('Threat: ${card['label']}', style: TextStyle(color: c.muted, fontSize: 12)),
+              ),
+            if (v == 'unknown')
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Text(
+                    'Only its fingerprint was checked; nothing was uploaded. Upload it for a full scan? '
+                    'Uploaded files are shared with security companies, so don\'t upload personal documents or photos.',
+                    style: TextStyle(color: c.muted, fontSize: 12)),
+              ),
+            if ('${card['error']}'.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Text('${card['error']}', style: TextStyle(color: c.muted, fontSize: 12)),
+              ),
+            Wrap(children: [
+              if (v == 'unknown' && src != null && card['state'] != 'uploading')
+                actionPill('Upload & scan', () => _vtUpload(m), primary: true),
+              if (card['state'] == 'uploading')
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Text('${card['status'] ?? 'Uploading…'}', style: TextStyle(color: c.muted, fontSize: 12)),
+                ),
+              if ('${card['link']}'.isNotEmpty && v != 'unknown' && v != 'error')
+                actionPill('Full report', () => Native.openUrl('${card['link']}')),
+            ]),
+          ]),
+        );
       case 'tgfile':
         return TgFileTile(file: TgFile.fromCard(card), from: '${card['from'] ?? ''}');
       case 'models':
@@ -1001,6 +1081,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
                             'unhide' => Icons.visibility_rounded,
                             'unmute' => Icons.notifications_active_rounded,
                             'gemini' || 'groq' => Icons.auto_awesome_rounded,
+                            'shortcut' => Icons.bolt_rounded,
                             _ => Icons.phone_android_rounded,
                           },
                           color: Colors.white,
@@ -1444,6 +1525,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
 
   // ---------- Pictures and things shared to Vibe ----------
   void _onShared(Map s) {
+    if (s['file'] != null) {
+      _closeDrawer();
+      navKey.currentState?.popUntil((r) => r.isFirst);
+      _say('📎 ${s['name'] ?? 'File'}${s['size'] is num ? ' · ${TgFile.human((s['size'] as num).toInt())}' : ''}');
+      _vtCheck(uri: '${s['file']}', title: '${s['name'] ?? 'this file'}');
+      return;
+    }
     final text = [s['subject'], s['text']].whereType<String>().where((e) => e.trim().isNotEmpty).join('\n');
     _closeDrawer();
     navKey.currentState?.popUntil((r) => r.isFirst);
@@ -2062,6 +2150,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     final low = Brain.norm(t);
     final m = RegExp(r'^(?:please )?(?:play|put on|listen to|start playing)\s+(.+)$').firstMatch(low);
     if (m == null) return false;
+    if (low.startsWith('play store') || low.startsWith('playstore')) return false;
     var q = m.group(1)!.trim();
     // "play", "play next", "play music" etc. are controls: leave them to the usual handling
     if (RegExp(r'^(it|this|that|the music|music|the song|song|next|previous|prev|again|on)$').hasMatch(q)) return false;
@@ -2153,6 +2242,232 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
       _say('Your music app can\'t play by search, so I opened it on YouTube Music instead.');
       Native.openUrl('https://music.youtube.com/search?q=${Uri.encodeComponent(q)}');
     }
+  }
+
+  // ---------- VirusTotal ----------
+  bool _vtAsked = false;
+
+  Future<bool> _vtNeedKey() async {
+    if (VirusTotal.ready) return false;
+    _say('To check files and links, Vibe needs a free VirusTotal key:\n'
+        '1. Sign up at virustotal.com (free)\n'
+        '2. Tap your profile → **API Key** and copy it\n'
+        '3. Paste it here, like "my VirusTotal key is …" (or in Vibe settings → Security)',
+        card: {
+          'type': 'ask',
+          'state': 'ask',
+          'buttons': [
+            {'label': 'Open VirusTotal', 'do': 'vtsite', 'primary': true},
+          ],
+        });
+    return true;
+  }
+
+  /// Checks a file (by path / shared uri) or an installed app by fingerprint, and posts the verdict.
+  Future<void> _vtCheck({String? path, String? uri, String? pkg, String title = '', bool quiet = false}) async {
+    if (await _vtNeedKey()) return;
+    if (!quiet) setState(() => _thinking = true);
+    try {
+      final fp = await Native.sha256(path: path, uri: uri, pkg: pkg);
+      if (fp == null) {
+        if (!quiet) _say('I couldn\'t read that file.', error: true);
+        return;
+      }
+      final r = await VirusTotal.lookup('${fp['sha256']}');
+      if (quiet && r.verdict == 'clean') {
+        _say('🛡️ ${title.isEmpty ? 'Download' : title}: clean (0/${r.total} engines).');
+        return;
+      }
+      if (quiet && r.verdict == 'error') return;
+      _say(r.verdict == 'flagged' ? '⚠️ Don\'t open this.' : 'VirusTotal says:',
+          card: r.toCard(title: title, source: {'path': path, 'uri': uri, 'pkg': pkg, 'name': title, 'size': fp['size']}));
+    } finally {
+      if (mounted && !quiet) setState(() => _thinking = false);
+    }
+  }
+
+  Future<void> _vtUpload(Msg m) async {
+    final card = Map.of(m.card!);
+    final src = card['source'] as Map;
+    _setCard(m, card..['state'] = 'uploading');
+    final tmp = await Native.readForUpload(path: src['path'] as String?, uri: src['uri'] as String?, pkg: src['pkg'] as String?);
+    if (tmp == null) {
+      _setCard(m, Map.of(card)..['state'] = null);
+      _say('I couldn\'t read that file to upload it.', error: true);
+      return;
+    }
+    final name = '${src['name'] ?? 'file'}'.isEmpty ? 'file' : '${src['name']}';
+    final r = await VirusTotal.upload(tmp, src['pkg'] != null ? '${src['pkg']}.apk' : name, status: (st) {
+      _setCard(m, Map.of(card)..['state'] = 'uploading'..['status'] = st);
+    });
+    _setCard(m, r.toCard(title: '${card['title']}', source: src));
+  }
+
+  Future<void> _vtUrl(String url) async {
+    if (await _vtNeedKey()) return;
+    setState(() => _thinking = true);
+    try {
+      final r = await VirusTotal.checkUrl(url);
+      _say(r.verdict == 'flagged' ? '⚠️ Don\'t open this link.' : 'VirusTotal on this link:',
+          card: r.toCard(title: Uri.tryParse(url)?.host ?? url));
+    } finally {
+      if (mounted) setState(() => _thinking = false);
+    }
+  }
+
+  bool _scanningAll = false;
+
+  /// "scan my apps": every app, one fingerprint check every 15 s (the free limit), then a summary.
+  Future<void> _vtScanAll() async {
+    if (await _vtNeedKey()) return;
+    if (_scanningAll) {
+      _say('Already scanning your apps. Say "stop scanning" to stop.');
+      return;
+    }
+    _scanningAll = true;
+    final apps = _apps.where((a) => a.pkg != 'com.vibe.vibe_launcher').toList();
+    final mins = (apps.length * 15 / 60).ceil();
+    _say('Scanning ${apps.length} apps with VirusTotal. The free plan allows 4 checks a minute, so this takes about $mins minutes. '
+        'I\'ll tell you what I find. Say "stop scanning" to stop.');
+    final bad = <Map>[];
+    var unknown = 0, done = 0;
+    for (final a in apps) {
+      if (!_scanningAll || !mounted) break;
+      final fp = await Native.sha256(pkg: a.pkg);
+      if (fp == null) continue;
+      final r = await VirusTotal.lookup('${fp['sha256']}');
+      done++;
+      if (r.verdict == 'error') {
+        _say('Stopped: ${r.error}', error: true);
+        break;
+      }
+      if (r.verdict == 'unknown') unknown++;
+      if (r.verdict == 'flagged' || r.verdict == 'suspicious') {
+        bad.add(r.toCard(title: a.label, source: {'pkg': a.pkg, 'name': a.label}));
+        _say('⚠️ ${a.label} was flagged.', card: bad.last);
+      }
+    }
+    _scanningAll = false;
+    _say(bad.isEmpty
+        ? '🛡️ Scanned $done apps: nothing flagged.${unknown > 0 ? ' $unknown aren\'t known to VirusTotal (often fine for apps from small developers).' : ''}'
+        : '⚠️ Scanned $done apps: ${bad.length} flagged (above). Consider uninstalling them.${unknown > 0 ? ' $unknown unknown.' : ''}');
+  }
+
+  /// "scan whatsapp", "is whatsapp safe", "check link …", "scan my apps", "stop scanning"
+  Future<bool> _vtCommands(String text) async {
+    final t = text.trim();
+    final low = Brain.norm(t);
+    if (RegExp(r'^stop scann?ing$').hasMatch(low)) {
+      _scanningAll = false;
+      _say('Stopped scanning.');
+      return true;
+    }
+    if (RegExp(r'^(scan|check|virus ?total|vt)( all| my)+ apps$|^scan (every|all) apps?$').hasMatch(low)) {
+      _vtScanAll();
+      return true;
+    }
+    final link = RegExp(r'https?://\S+').firstMatch(t);
+    if (link != null && RegExp(r'^(check|scan|is|virus ?total|vt)\b').hasMatch(low)) {
+      await _vtUrl(link.group(0)!);
+      return true;
+    }
+    final app = RegExp(r'^(?:scan|virus ?total|vt|check app|scan app|is)\s+(?:the )?(.+?)(?:\s+app)?(?:\s+(?:safe|for viruses|for malware))?$').firstMatch(low);
+    if (app != null && (low.startsWith('scan') || low.startsWith('virus') || low.startsWith('vt') || low.startsWith('check app') ||
+        (low.startsWith('is') && RegExp(r'\bsafe$').hasMatch(low)))) {
+      final found = Brain.match(Brain.norm(app.group(1)!), _apps);
+      if (found.isEmpty || found.first.score < 60) return false;
+      await _vtCheck(pkg: found.first.app.pkg, title: found.first.app.label);
+      return true;
+    }
+    return false;
+  }
+
+  // ---------- App shortcuts (long-press actions of other apps) ----------
+  List<Map> _shortcuts = [];
+
+  Future<void> _loadShortcuts() async {
+    final l = await Native.shortcuts();
+    if (l != null && mounted) _shortcuts = l;
+  }
+
+  String _appLabel(String pkg) => _byPkg(pkg)?.label ?? pkg;
+
+  Map? _findShortcut(String low) {
+    Map? best;
+    var bestScore = 0;
+    for (final sc in _shortcuts) {
+      final app = Brain.norm(_appLabel('${sc['package']}'));
+      final l1 = Brain.norm('${sc['label']}'), l2 = Brain.norm('${sc['long']}');
+      if (l1.isEmpty) continue;
+      var score = 0;
+      for (final l in [l1, l2]) {
+        if (l.isEmpty) continue;
+        if (low == '$app $l' || low == '$l in $app' || low == '$l on $app' || low == 'open $app $l') {
+          score = 100;
+        } else if (low.contains(app) && low.contains(l)) {
+          score = score < 80 ? 80 : score;
+        }
+      }
+      if (score > bestScore) {
+        bestScore = score;
+        best = sc;
+      }
+    }
+    return bestScore >= 80 ? best : null;
+  }
+
+  Future<void> _runShortcut(Map sc) async {
+    final pkg = '${sc['package']}';
+    _focus.unfocus();
+    _appSays(pkg, _appLabel(pkg), 'Opening ${sc['label']}…');
+    await _shown();
+    if (!await Native.startShortcut(pkg, '${sc['id']}')) {
+      _say('That shortcut didn\'t open. The app may have changed it.', error: true);
+    }
+  }
+
+  /// "play store my apps", "chrome incognito", "whatsapp new group", "app updates", "shortcuts for chrome"
+  Future<bool> _shortcutCommands(String text) async {
+    final low = Brain.norm(text);
+    if (_shortcuts.isEmpty && await Native.isDefault()) await _loadShortcuts();
+    final list = RegExp(r'^(?:show |list )?(?:shortcuts|actions) (?:for|of|in) (.+)$|^(.+?) (?:shortcuts|actions)$').firstMatch(low);
+    if (list != null) {
+      final name = (list.group(1) ?? list.group(2))!;
+      final found = Brain.match(name, _apps);
+      if (found.isEmpty) return false;
+      final a = found.first.app;
+      final mine = _shortcuts.where((s) => s['package'] == a.pkg).toList();
+      if (_shortcuts.isEmpty) {
+        _say('App shortcuts work once Vibe is your Home app. Say "make Vibe my home app".');
+      } else if (mine.isEmpty) {
+        _say('${a.label} has no shortcuts.');
+      } else {
+        _say('${a.label} shortcuts. Tap one:', card: {
+          'type': 'models',
+          'kind': 'shortcut',
+          'items': [for (final s in mine) {'id': '${s['package']}|${s['id']}', 'name': '${s['label']}', 'sub': '${s['long']}'.isEmpty ? a.label : '${s['long']}'}],
+        });
+      }
+      return true;
+    }
+    // Play Store's "my apps / updates"
+    if (RegExp(r'^(check |show |open |play store |ps )?(app |apps |my app |for )?updates?$|^update (my |all )?apps$|^(my apps|manage apps)( in (the )?play store)?$|^play ?store (my apps|updates|manage apps)$').hasMatch(low)) {
+      final sc = _shortcuts.where((s) => s['package'] == 'com.android.vending').where((s) =>
+          RegExp(r'my apps|manage|update|library', caseSensitive: false).hasMatch('${s['label']} ${s['long']}')).firstOrNull;
+      if (sc != null) {
+        await _runShortcut(sc);
+      } else {
+        await _talkAndOpen('com.android.vending', 'Play Store', 'Opening your apps & updates…',
+            {'url': 'https://play.google.com/store/apps/details?id=com.android.vending', 'open': 'com.android.vending'});
+      }
+      return true;
+    }
+    final sc = _findShortcut(low.replaceFirst(RegExp(r'^(open|start|launch) '), ''));
+    if (sc != null) {
+      await _runShortcut(sc);
+      return true;
+    }
+    return false;
   }
 
   // ---------- Dial pad ----------
@@ -2712,8 +3027,25 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
           });
         }
       default:
-        _say('The offline AI isn\'t available on this phone right now. Update **Android AICore** and '
-            '**Private Compute Services** from the Play Store, restart the phone, then ask me again.');
+        final info = await Native.nanoInfo();
+        final err = '${info['error'] ?? ''}';
+        final aicore = '${info['aicore'] ?? '?'}';
+        _say('The offline AI isn\'t ready on this phone yet. Your ${info['model']} supports it; Google installs it through '
+            '**Android AICore**, which needs updating first.\n\n'
+            '• Status: ${info['status']}${err.isEmpty ? '' : ' ($err)'}\n'
+            '• Android AICore: $aicore\n'
+            '• Private Compute Services: ${info['pcs']}\n\n'
+            'These two don\'t show in Play Store search, so use the buttons. After updating, restart the phone and tap Check again. '
+            'Google sometimes turns it on a day or two later.',
+            card: {
+              'type': 'ask',
+              'state': 'ask',
+              'buttons': [
+                {'label': 'Update AICore', 'do': 'upd_aicore', 'primary': true},
+                {'label': 'Update Private Compute', 'do': 'upd_pcs'},
+                {'label': 'Check again', 'do': 'nano_check'},
+              ],
+            });
     }
   }
 
@@ -2749,13 +3081,21 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
 
   void _onAsk(Msg m, String action) {
     // Buttons you can use again and again (call, open…) stay active; one-time choices lock
-    const repeat = {'numcall', 'nummsg', 'numsave', 'numpad', 'tgfileopen', 'tgdownloads', 'tgopen', 'tgstart'};
+    const repeat = {'vtsite', 'upd_aicore', 'upd_pcs', 'nano_check', 'numcall', 'nummsg', 'numsave', 'numpad', 'tgfileopen', 'tgdownloads', 'tgopen', 'tgstart'};
     if (!repeat.contains(action)) _setCard(m, Map.from(m.card!)..['state'] = action);
     switch (action) {
       case 'nano_models':
         _showModels();
       case 'cancel':
         _say('Okay. Ask me "download offline model" anytime.');
+      case 'vtsite':
+        Native.openUrl('https://www.virustotal.com/gui/my-apikey');
+      case 'upd_aicore':
+        Native.openUrl('market://details?id=com.google.android.aicore');
+      case 'upd_pcs':
+        Native.openUrl('market://details?id=com.google.android.as.oss');
+      case 'nano_check':
+        _offlineModel();
       case 'numcall' || 'nummsg' || 'numsave' || 'numpad':
         final n = '${m.card!['number']}';
         if (action == 'numcall') {
@@ -2806,6 +3146,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
       case 'unhide':
         if (prefs.hidden.contains(id)) prefs.toggleHidden(id);
         _say('${item['name']} is back in your apps.');
+      case 'shortcut':
+        final parts = id.split('|');
+        _runShortcut({'package': parts[0], 'id': parts.sublist(1).join('|'), 'label': item['name']});
+        _setCard(m, Map.from(m.card!)..remove('picked'));
       case 'unmute':
         if (prefs.muted.contains(id)) prefs.toggleMuted(id);
         _say('${item['name']} notifications show here again.');
@@ -3163,6 +3507,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
   final Map<String, (String, String)> _pendingKeys = {}; // card id → (which, key). Never saved to disk.
 
   static final _keyRes = <(String, RegExp)>[
+    ('virustotal', RegExp(r'(?<![0-9a-fA-F])[0-9a-fA-F]{64}(?![0-9a-fA-F])')),
     ('gemini', RegExp(r'\bAIza[0-9A-Za-z_\-]{30,}')),
     ('groq', RegExp(r'\bgsk_[A-Za-z0-9]{20,}')),
     ('openrouter', RegExp(r'\bsk-or-v1-[A-Za-z0-9]{20,}')),
@@ -3170,6 +3515,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     ('cftoken', RegExp(r'(?<![A-Za-z0-9_\-])[A-Za-z0-9_\-]{40}(?![A-Za-z0-9_\-])')),
   ];
   static const _keyNames = {
+    'virustotal': 'VirusTotal API key',
     'gemini': 'Gemini API key',
     'groq': 'Groq API key',
     'openrouter': 'OpenRouter key',
@@ -3185,6 +3531,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
       if (k == null) continue;
       // The two Cloudflare ones are plain-looking, so they need the word "cloudflare"
       if (which.startsWith('cf') && !low.contains('cloudflare')) continue;
+      if (which == 'virustotal' && !low.contains('virustotal') && !low.contains('virus total') && !RegExp(r'\bvt\b').hasMatch(low)) continue;
       if (which == 'cfaccount' && !low.contains('account')) continue;
       if (which == 'cftoken' && !low.contains('token')) continue;
       final key = k.group(0)!;
@@ -3215,6 +3562,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     }
     final (which, key) = p;
     switch (which) {
+      case 'virustotal':
+        prefs.setVtKey(key);
+        _say('🔐 Saved your VirusTotal key. Try "scan WhatsApp" or share a file to Vibe.');
+        return;
       case 'gemini':
         prefs.setGeminiKey(key);
       case 'groq':
