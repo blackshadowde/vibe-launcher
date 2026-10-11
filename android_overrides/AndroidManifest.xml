@@ -26,6 +26,10 @@
 
     <!-- Lets the launcher see every app that has an icon in the app drawer -->
     <queries>
+        <!-- Lets Vibe see these system apps to report on the on-phone AI (Android 11+ hides other apps by default) -->
+        <package android:name="com.google.android.aicore" />
+        <package android:name="com.google.android.as.oss" />
+        <package android:name="com.google.android.as" />
         <intent>
             <action android:name="android.media.browse.MediaBrowserService" />
         </intent>
