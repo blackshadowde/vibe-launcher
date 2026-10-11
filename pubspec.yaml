@@ -1,7 +1,7 @@
 name: vibe_launcher
 description: A Discord-style Android launcher. Apps are users, notifications are messages.
 publish_to: 'none'
-version: 0.26.3+38
+version: 0.27.0+39
 
 environment:
   sdk: '>=3.4.0 <4.0.0'
