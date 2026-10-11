@@ -31,6 +31,9 @@ class Gemini {
       prefs.groqKey.trim().isNotEmpty ||
       cloudflareChat;
   static bool get cloudflareChat => prefs.cfChat && validCfAccount(prefs.cfAccount) && prefs.cfToken.isNotEmpty;
+  /// Ask this AI first for the next request only (gemini / groq / cloudflare / openrouter).
+  static String? only;
+
   static const groqDefault = 'openai/gpt-oss-120b';
   static const cfModel = '@cf/openai/gpt-oss-120b';
 
@@ -315,7 +318,10 @@ class Gemini {
         c is Map && (c['parts'] as List? ?? []).any((p) => p is Map && p['inlineData'] != null));
     final gemini = prefs.geminiKey.trim().isNotEmpty;
     // Live Google search and pictures need Gemini; the others are text-only
+    final pick = only; // "groq, tell me a joke": that AI first, this once
+    only = null;
     final order = <String>[
+      if (pick != null && !(hasImage && pick != 'gemini' && pick != 'openrouter')) pick,
       if (gemini && (isSearch || hasImage)) 'gemini',
       if (prefs.mainAi != 'gemini') prefs.mainAi,
       'gemini', 'groq', 'cloudflare', 'openrouter',

@@ -8,7 +8,7 @@ import 'theme.dart';
 
 /// One installed app. In the UI it's a "user" in the DM list.
 /// Shown in settings and when you ask "what version is this".
-const vibeVersion = '0.25.1';
+const vibeVersion = '0.25.2';
 
 class AppEntry {
   final String label, pkg;

@@ -223,6 +223,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     chat.add(Msg(true, text));
     _toBottom();
 
+    // "gemini, …" / "groq …" / "cloudflare draw …" / "nano …": that AI answers this message
+    if (await _addressedAi(text)) return;
+
     // Pictures: "draw …", "create an image of …", "set it as wallpaper"
     final ig = ImageGen.parse(text);
     if (ig != null) {
@@ -2249,6 +2252,63 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
       _say('Your music app can\'t play by search, so I opened it on YouTube Music instead.');
       Native.openUrl('https://music.youtube.com/search?q=${Uri.encodeComponent(q)}');
     }
+  }
+
+  // ---------- Talking to a specific AI ----------
+  static const _aiNames = {
+    'gemini': 'gemini', 'groq': 'groq', 'cloudflare': 'cloudflare', 'cloud flare': 'cloudflare', 'cf': 'cloudflare',
+    'openrouter': 'openrouter', 'backup ai': 'openrouter', 'nano': 'nano', 'gemini nano': 'nano',
+    'offline ai': 'nano', 'on phone ai': 'nano', 'local ai': 'nano',
+  };
+
+  Future<bool> _addressedAi(String text) async {
+    final m = RegExp(r'^(?:hey\s+|ask\s+|@)?(gemini nano|gemini|groq|cloud ?flare|cf|openrouter|backup ai|nano|offline ai|on[- ]phone ai|local ai)\b[\s,:.!-]+(.+)$',
+            caseSensitive: false)
+        .firstMatch(text.trim());
+    if (m == null) return false;
+    final rest = m.group(2)!.trim();
+    // Settings commands that start with an AI name stay settings commands
+    if (RegExp(r'^(models?|chat\b.*|key\b.*|api key.*|on|off|ai|status)$', caseSensitive: false).hasMatch(rest) ||
+        rest.toLowerCase().contains(' key ')) {
+      return false;
+    }
+    final ai = _aiNames[m.group(1)!.toLowerCase().replaceAll('-', ' ')] ?? 'gemini';
+    // Pictures always come from Cloudflare
+    final ig = ImageGen.parse(rest);
+    if (ig != null) {
+      await _draw(ig.prompt, wallpaper: ig.wallpaper);
+      return true;
+    }
+    if (ai == 'nano') {
+      if (_nano != 'available') {
+        await Future.delayed(const Duration(milliseconds: 200));
+        _say('The on-phone AI isn\'t installed yet. Say "is the offline AI downloaded?" to set it up.', error: true);
+        return true;
+      }
+      final t = _threadForNew();
+      _tagLastMine(t);
+      _curThread = t;
+      try {
+        await _askNano(rest, convo: chat.msgs.where((x) => x.thread == t).toList());
+      } finally {
+        _curThread = null;
+      }
+      return true;
+    }
+    final has = switch (ai) {
+      'gemini' => prefs.geminiKey.isNotEmpty,
+      'groq' => prefs.groqKey.isNotEmpty,
+      'cloudflare' => Gemini.cloudflareChat,
+      _ => prefs.routerKey.isNotEmpty,
+    };
+    if (!has) {
+      await Future.delayed(const Duration(milliseconds: 200));
+      _say('There\'s no ${m.group(1)} key yet. Add it in Vibe settings → Vibe AI.', error: true);
+      return true;
+    }
+    Gemini.only = ai;
+    await _askGemini(rest);
+    return true;
   }
 
   // ---------- VirusTotal ----------
@@ -4796,6 +4856,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
       if (r.sure && r.act != Act.none) {
         await _doLocal(r);
       } else if (Gemini.enabled || _nano == 'available') {
+        // Continue with the AI that wrote that answer
+        Gemini.only = switch (to.ai) {
+          'Groq' => 'groq',
+          'Cloudflare AI' => 'cloudflare',
+          'Backup AI' => 'openrouter',
+          _ => to.local ? null : (prefs.geminiKey.isNotEmpty ? 'gemini' : null),
+        };
         await _askGemini(text, thread: t);
       } else {
         await _doLocal(r);
