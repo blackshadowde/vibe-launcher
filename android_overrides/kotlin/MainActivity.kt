@@ -63,6 +63,8 @@ class MainActivity : FlutterActivity() {
     private var docText: String? = null
     private val saveCode = 4731
     private val openCode = 4732
+    private val pickCode = 4733
+    private var pickResult: MethodChannel.Result? = null
     private val packMaps = HashMap<String, Map<String, String>>()
 
     // ---------- On-phone AI: Gemini Nano through Android's AICore ----------
@@ -527,6 +529,26 @@ class MainActivity : FlutterActivity() {
                             .setType("*/*"), openCode)
                     } catch (e: Exception) { docResult = null; result.success(null) }
                 }
+                // + → Files: pick any file (document, APK, video…) to check or ask about
+                "pickFile" -> {
+                    pickResult?.success(null)
+                    pickResult = result
+                    try {
+                        startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT)
+                            .addCategory(Intent.CATEGORY_OPENABLE)
+                            .setType("*/*"), pickCode)
+                    } catch (e: Exception) { pickResult = null; result.success(null) }
+                }
+                // Small text files (notes, code, CSV…) so the AI can read them
+                "readText" -> Thread {
+                    val t = try {
+                        contentResolver.openInputStream(Uri.parse(call.argument<String>("uri") ?: ""))?.use { ins ->
+                            val b = ins.readBytes()
+                            if (b.size > 300_000) null else String(b, Charsets.UTF_8)
+                        }
+                    } catch (e: Throwable) { null }
+                    runOnUiThread { try { result.success(t) } catch (_: Throwable) {} }
+                }.start()
                 "nanoStatus" -> scope.launch { result.success(nanoStatus()) }
                 // Why the on-phone AI isn't ready: the exact status / error, and the AICore app versions
                 "nanoInfo" -> scope.launch {
@@ -1247,6 +1269,23 @@ class MainActivity : FlutterActivity() {
                 contentResolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) }
             } catch (e: Exception) { null } else null
             docResult?.success(text); docResult = null
+        }
+        if (requestCode == pickCode) {
+            val uri = data?.data
+            var out: Map<String, Any>? = null
+            if (resultCode == RESULT_OK && uri != null) {
+                try { contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (_: Throwable) {}
+                var name = "file"
+                var size = -1L
+                try {
+                    contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME, android.provider.OpenableColumns.SIZE), null, null, null)?.use { c ->
+                        if (c.moveToFirst()) { name = c.getString(0) ?: "file"; size = c.getLong(1) }
+                    }
+                } catch (_: Throwable) {}
+                out = mapOf("uri" to uri.toString(), "name" to name, "size" to size,
+                    "mime" to (contentResolver.getType(uri) ?: "application/octet-stream"))
+            }
+            pickResult?.success(out); pickResult = null
         }
         if (requestCode == listenCode) {
             val text = data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()
