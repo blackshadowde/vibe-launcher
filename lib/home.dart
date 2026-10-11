@@ -989,6 +989,57 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
         ]);
       case 'player':
         return PlayerCard(card: card);
+      case 'file':
+        final fname = '${card['name']}';
+        final apk = fname.toLowerCase().endsWith('.apk');
+        final size = (card['size'] as num?)?.toInt() ?? -1;
+        final mime = '${card['mime']}';
+        return Container(
+          margin: const EdgeInsets.only(top: 6),
+          constraints: const BoxConstraints(maxWidth: 380),
+          decoration: box(),
+          padding: const EdgeInsets.fromLTRB(12, 12, 12, 6),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(children: [
+              Container(
+                width: 42,
+                height: 42,
+                decoration: BoxDecoration(color: const Color(0xFF00A8FC), borderRadius: BorderRadius.circular(10)),
+                child: Icon(
+                    apk
+                        ? Icons.android_rounded
+                        : mime.startsWith('video')
+                            ? Icons.movie_rounded
+                            : mime.startsWith('audio')
+                                ? Icons.music_note_rounded
+                                : mime.startsWith('image')
+                                    ? Icons.image_rounded
+                                    : Icons.insert_drive_file_rounded,
+                    color: Colors.white),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(fname, maxLines: 2, overflow: TextOverflow.ellipsis,
+                      style: TextStyle(color: c.text, fontWeight: FontWeight.w600, fontSize: 14.5)),
+                  Text([if (size > 0) TgFile.human(size), if (apk) 'Android app' else mime].join(' · '),
+                      style: TextStyle(color: c.faint, fontSize: 12)),
+                ]),
+              ),
+            ]),
+            Wrap(children: [
+              actionPill('Scan with VirusTotal', () => _vtCheck(uri: '${card['uri']}', title: fname), primary: true),
+              if (!apk) actionPill('Open', () => Native.openFile('${card['uri']}', mime)),
+              if (_textExt.hasMatch(fname) || mime.startsWith('text/')) actionPill('Ask Vibe about it', () => _askAboutFile(card)),
+            ]),
+            if (apk)
+              Padding(
+                padding: const EdgeInsets.only(top: 4, bottom: 4),
+                child: Text('To install, open it from your Files app after the scan.',
+                    style: TextStyle(color: c.faint, fontSize: 11.5)),
+              ),
+          ]),
+        );
       case 'vt':
         final v = '${card['verdict']}';
         final col = v == 'clean' ? VC.green : v == 'flagged' ? VC.red : v == 'suspicious' ? VC.yellow : c.muted;
@@ -1588,6 +1639,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
               Navigator.pop(ctx);
               _pick(ImageSource.gallery);
             }),
+            tile(Icons.attach_file_rounded, const Color(0xFF00A8FC), 'Files', () {
+              Navigator.pop(ctx);
+              _pickFile();
+            }),
             tile(Icons.apps_rounded, const Color(0xFFEB459E), 'Apps', () {
               Navigator.pop(ctx);
               _openDrawer();
@@ -1600,6 +1655,36 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
         ),
       ),
     );
+  }
+
+  static final _textExt = RegExp(r'\.(txt|md|csv|json|log|xml|html?|ya?ml|ini|conf|dart|kt|java|py|js|ts|c|cpp|h|sh|sql|srt)$',
+      caseSensitive: false);
+
+  /// + → Files: any file. Shows a card to scan it with VirusTotal, open it, or ask Vibe about it.
+  Future<void> _pickFile() async {
+    final f = await Native.pickFile();
+    if (f == null || !mounted) return;
+    final name = '${f['name']}';
+    final size = (f['size'] as num?)?.toInt() ?? -1;
+    chat.add(Msg(true, '📎 $name${size > 0 ? ' · ${TgFile.human(size)}' : ''}'));
+    _toBottom();
+    await Future.delayed(const Duration(milliseconds: 200));
+    _say(name.toLowerCase().endsWith('.apk') ? 'An app installer (APK). Scan it before installing:' : 'What should I do with it?',
+        card: {'type': 'file', 'uri': f['uri'], 'name': name, 'size': size, 'mime': f['mime']});
+  }
+
+  Future<void> _askAboutFile(Map card) async {
+    final text = await Native.readText('${card['uri']}');
+    if (!mounted) return;
+    if (text == null) {
+      _say('That file is too big (or not text) for me to read. I can read text files up to 300 KB.', error: true);
+      return;
+    }
+    setState(() {
+      _attachText = '📄 ${card['name']}\n\n$text';
+      _attachImg = null;
+    });
+    _focus.requestFocus();
   }
 
   Future<void> _pick(ImageSource src) async {

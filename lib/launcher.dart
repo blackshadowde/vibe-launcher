@@ -8,7 +8,7 @@ import 'theme.dart';
 
 /// One installed app. In the UI it's a "user" in the DM list.
 /// Shown in settings and when you ask "what version is this".
-const vibeVersion = '0.26.1';
+const vibeVersion = '0.26.2';
 
 class AppEntry {
   final String label, pkg;
@@ -171,6 +171,8 @@ class Native {
       await _c.invokeMethod<bool>('openUrl', {'url': url, 'package': pkg}) ?? false;
   static Future<bool> openSettingsPage(String action) async =>
       await _c.invokeMethod<bool>('openSettingsPage', {'action': action}) ?? false;
+  static Future<Map?> pickFile() => _c.invokeMethod<Map>('pickFile');
+  static Future<String?> readText(String uri) => _c.invokeMethod<String>('readText', {'uri': uri});
   // App shortcuts (needs Vibe to be the Home app)
   static Future<List<Map>?> shortcuts({String? pkg}) async {
     try {
