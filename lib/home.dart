@@ -22,6 +22,7 @@ import 'settings_page.dart';
 import 'telegram.dart';
 import 'telegram_ui.dart';
 import 'theme.dart';
+import 'transfers.dart';
 import 'vt.dart';
 import 'widgets.dart';
 
@@ -71,6 +72,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     Native.onPlayer = VibePlayer.i.onEvent;
     onScanApp = (a) => _vtCheck(pkg: a.pkg, title: a.label);
     Telegram.i.onIncoming = _onTelegram;
+    Telegram.i.addListener(_syncTransfers);
     Telegram.i.onDownloaded = (d) {
       if (!mounted) return;
       if (VirusTotal.ready && d['uri'] != null) {
@@ -135,6 +137,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
   @override
   void dispose() {
     appErrors.removeListener(_onAppError);
+    Telegram.i.removeListener(_syncTransfers);
     prefs.removeListener(_prefsChanged);
     WidgetsBinding.instance.removeObserver(this);
     _dc.dispose();
@@ -2254,6 +2257,25 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     }
   }
 
+  /// Keeps the blue bar in step with Telegram downloads.
+  void _syncTransfers() {
+    final live = <String>{};
+    for (final d in Telegram.i.downloads.values) {
+      final st = '${d['state']}';
+      if (st != 'downloading' && st != 'saving' && st != 'paused') continue;
+      final id = (d['id'] as num).toInt();
+      live.add('tg:$id');
+      Transfers.i.put('tg:$id', '${d['name']}', 'download',
+          done: (d['done'] as num?)?.toInt() ?? 0,
+          total: (d['size'] as num?)?.toInt() ?? 0,
+          sub: st == 'saving' ? 'Saving to Download/Vibe Telegram' : st == 'paused' ? 'Paused' : 'Telegram${'${d['from']}'.isEmpty ? '' : ' · ${d['from']}'}',
+          cancel: () => Telegram.i.cancel(id));
+    }
+    for (final t in Transfers.i.list) {
+      if (t.id.startsWith('tg:') && !live.contains(t.id)) Transfers.i.remove(t.id);
+    }
+  }
+
   // ---------- Talking to a specific AI ----------
   static const _aiNames = {
     'gemini': 'gemini', 'groq': 'groq', 'cloudflare': 'cloudflare', 'cloud flare': 'cloudflare', 'cf': 'cloudflare',
@@ -2364,9 +2386,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
       return;
     }
     final name = '${src['name'] ?? 'file'}'.isEmpty ? 'file' : '${src['name']}';
+    final tid = 'vt:${DateTime.now().millisecondsSinceEpoch}';
+    Transfers.i.put(tid, 'VirusTotal · $name', 'upload', sub: 'Uploading…');
+    _setCard(m, Map.of(card)..['state'] = 'uploading'..['status'] = 'Uploading… (tap the blue bar for progress)');
     final r = await VirusTotal.upload(tmp, src['pkg'] != null ? '${src['pkg']}.apk' : name, status: (st) {
-      _setCard(m, Map.of(card)..['state'] = 'uploading'..['status'] = st);
+      Transfers.i.put(tid, 'VirusTotal · $name', 'upload', sub: st);
     });
+    Transfers.i.remove(tid);
     _setCard(m, r.toCard(title: '${card['title']}', source: src));
   }
 
@@ -2398,8 +2424,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
         'I\'ll tell you what I find. Say "stop scanning" to stop.');
     final bad = <Map>[];
     var unknown = 0, done = 0;
+    Transfers.i.put('scan', 'Scanning apps with VirusTotal', 'scan', total: apps.length, cancel: () => _scanningAll = false);
     for (final a in apps) {
       if (!_scanningAll || !mounted) break;
+      Transfers.i.put('scan', 'Scanning apps with VirusTotal', 'scan', done: done, total: apps.length, sub: a.label,
+          cancel: () => _scanningAll = false);
       final fp = await Native.sha256(pkg: a.pkg);
       if (fp == null) continue;
       final r = await VirusTotal.lookup('${fp['sha256']}');
@@ -2415,6 +2444,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
       }
     }
     _scanningAll = false;
+    Transfers.i.remove('scan');
     _say(bad.isEmpty
         ? '🛡️ Scanned $done apps: nothing flagged.${unknown > 0 ? ' $unknown aren\'t known to VirusTotal (often fine for apps from small developers).' : ''}'
         : '⚠️ Scanned $done apps: ${bad.length} flagged (above). Consider uninstalling them.${unknown > 0 ? ' $unknown unknown.' : ''}');
@@ -3653,18 +3683,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
   Future<void> _startNanoDownload() async {
     if (_nanoBusy) return;
     _nanoBusy = true;
-    final id = 'dl${DateTime.now().millisecondsSinceEpoch}';
-    _say('Downloading Gemini Nano. Keep Wi-Fi on; you can keep using Vibe.',
-        card: {'type': 'progress', 'id': id, 'title': 'Gemini Nano', 'done': 0, 'total': 0, 'state': 'running'});
-    var last = 0;
+    _say('Downloading Gemini Nano. Keep Wi-Fi on; the blue bar in the message box shows progress.');
+    Transfers.i.put('nano', 'Gemini Nano (offline AI)', 'model');
     var total = 0;
     Native.onNanoProgress = (done, t) {
       if (t > 0) total = t;
-      final now = DateTime.now().millisecondsSinceEpoch;
-      if (now - last < 700) return; // a few updates a second is plenty
-      last = now;
-      final m = _msgWithCard(id);
-      if (m != null) _setCard(m, Map.from(m.card!)..['done'] = done..['total'] = total);
+      Transfers.i.put('nano', 'Gemini Nano (offline AI)', 'model', done: done, total: total);
     };
     var ok = false;
     try {
@@ -3672,10 +3696,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
     } catch (_) {}
     Native.onNanoProgress = null;
     _nanoBusy = false;
+    Transfers.i.remove('nano');
     final st = await Native.nanoStatus();
     if (mounted) setState(() => _nano = st);
-    final m = _msgWithCard(id);
-    if (m != null) _setCard(m, Map.from(m.card!)..['state'] = ok || st == 'available' ? 'done' : 'failed');
     if (ok || st == 'available') {
       _say('🎉 Offline model installed! I can now answer without internet, and nothing leaves your phone.', local: true);
     } else {
@@ -5001,6 +5024,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
         Expanded(
           child: Container(
             decoration: BoxDecoration(color: c.input, borderRadius: BorderRadius.circular(28)),
+            clipBehavior: Clip.antiAlias,
+            child: Stack(children: [
+            Padding(
             padding: const EdgeInsets.all(5),
             child: Row(children: [
               Material(
@@ -5038,7 +5064,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
                   ),
                 ),
               ),
+              const TransferChip(),
               const SizedBox(width: 8),
+            ]),
+            ),
+            // Downloads / uploads running: a slim blue bar along the bottom of the box
+            const Positioned(left: 18, right: 18, bottom: 0, child: TransferBar()),
             ]),
           ),
         ),
