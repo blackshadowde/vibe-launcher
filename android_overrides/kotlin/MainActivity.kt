@@ -19,6 +19,9 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.net.Uri
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
 import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
@@ -88,6 +91,8 @@ class MainActivity : FlutterActivity() {
         }
     } catch (e: Throwable) { "unavailable" }
     private var permResult: MethodChannel.Result? = null
+    private var locResult: MethodChannel.Result? = null
+    private val locCode = 4741
     private val permCode = 4722
     private val peoplePerms = arrayOf(
         Manifest.permission.READ_CONTACTS,
@@ -117,6 +122,10 @@ class MainActivity : FlutterActivity() {
     private fun handleCall(call: io.flutter.plugin.common.MethodCall, result: MethodChannel.Result) {
             val pkg = call.argument<String>("package")
             when (call.method) {
+                "fsHome", "fsList", "fsFind", "fsGrep", "fsDu", "fsDf", "fsRead", "fsWrite", "fsOp", "fsTrash", "fsThumb" ->
+                    fsCall(call, result)
+                "fsShare" -> result.success(VibeFiles.share(this, call.argument<List<String>>("paths") ?: emptyList()))
+                "fsOpen" -> result.success(VibeFiles.open(this, call.argument<String>("path") ?: ""))
                 "lastCrash" -> {
                     val f = java.io.File(filesDir, "last_crash.txt")
                     val t = try { if (f.exists()) f.readText() else null } catch (_: Throwable) { null }
@@ -168,6 +177,25 @@ class MainActivity : FlutterActivity() {
                     } catch (e: Throwable) { null }
                     runOnUiThread { try { result.success(uri) } catch (_: Throwable) {} }
                 }.start()
+                "shareText" -> {
+                    val i = Intent(Intent.ACTION_SEND).setType("text/plain")
+                        .putExtra(Intent.EXTRA_TEXT, call.argument<String>("text") ?: "")
+                    result.success(open(Intent.createChooser(i, call.argument<String>("title") ?: "Share")))
+                }
+                "location" -> {
+                    val fine = Manifest.permission.ACCESS_FINE_LOCATION
+                    val coarse = Manifest.permission.ACCESS_COARSE_LOCATION
+                    if (has(fine) || has(coarse)) getLocation(result)
+                    else if (call.argument<Boolean>("ask") == true) {
+                        locResult?.success(mapOf("error" to "denied"))
+                        locResult = result
+                        requestPermissions(arrayOf(fine, coarse), locCode)
+                    } else result.success(mapOf("error" to "denied"))
+                }
+                "locationPerm" -> result.success(
+                    has(Manifest.permission.ACCESS_FINE_LOCATION) || has(Manifest.permission.ACCESS_COARSE_LOCATION)
+                )
+                "openLocationSettings" -> result.success(open(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)))
                 "shareImage" -> {
                     val i = Intent(Intent.ACTION_SEND).setType("image/jpeg")
                         .putExtra(Intent.EXTRA_STREAM, Uri.parse(call.argument<String>("uri") ?: ""))
@@ -659,6 +687,14 @@ class MainActivity : FlutterActivity() {
         if (requestCode == permCode) {
             permResult?.success(permMap())
             permResult = null
+        }
+        if (requestCode == locCode) {
+            val r = locResult
+            locResult = null
+            if (r != null) {
+                if (grantResults.any { it == PackageManager.PERMISSION_GRANTED }) getLocation(r)
+                else r.success(mapOf("error" to if (shouldShowRequestPermissionRationale(Manifest.permission.ACCESS_FINE_LOCATION)) "denied" else "blocked"))
+            }
         }
     }
 
@@ -1168,6 +1204,98 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun has(p: String) = checkSelfPermission(p) == PackageManager.PERMISSION_GRANTED
+
+    /** File commands run off the main thread: big folders and searches take a moment. */
+    private fun fsCall(call: io.flutter.plugin.common.MethodCall, result: MethodChannel.Result) {
+        Thread {
+            val r: Any? = try {
+                fun s(k: String) = call.argument<String>(k) ?: ""
+                fun l(k: String) = (call.argument<Any>(k) as? Number)?.toLong() ?: 0L
+                when (call.method) {
+                    "fsHome" -> mapOf("root" to VibeFiles.root.absolutePath, "volumes" to VibeFiles.volumes(this), "access" to VibeFiles.access())
+                    "fsList" -> VibeFiles.list(s("path"), call.argument<Boolean>("hidden") == true)
+                    "fsFind" -> VibeFiles.find(
+                        this, s("root"), call.argument<String>("like"), call.argument<String>("mime"),
+                        call.argument<List<String>>("exts") ?: emptyList(),
+                        l("min"), l("max"), l("newer"), l("older"), call.argument<Boolean>("dirs") == true,
+                        (call.argument<Any>("limit") as? Number)?.toInt() ?: 200
+                    )
+                    "fsGrep" -> VibeFiles.grep(s("path"), s("text"), call.argument<Boolean>("case") != true, 100)
+                    "fsDu" -> VibeFiles.du(s("path"))
+                    "fsDf" -> VibeFiles.df(this)
+                    "fsRead" -> VibeFiles.read(s("path"), (call.argument<Any>("max") as? Number)?.toInt() ?: 524288)
+                    "fsWrite" -> VibeFiles.write(this, s("path"), s("text"), call.argument<Boolean>("append") == true)
+                    "fsOp" -> VibeFiles.op(this, s("op"), call.argument<List<String>>("paths") ?: emptyList(),
+                        call.argument<String>("dest"), call.argument<String>("name"))
+                    "fsTrash" -> VibeFiles.trashList(this)
+                    "fsThumb" -> VibeFiles.thumb(s("path"), (call.argument<Any>("size") as? Number)?.toInt() ?: 160)
+                    else -> null
+                }
+            } catch (e: Throwable) { mapOf("error" to "${e.javaClass.simpleName}: ${e.message}") }
+            runOnUiThread { try { result.success(r) } catch (_: Throwable) {} }
+        }.start()
+    }
+
+    private fun locMap(l: Location): Map<String, Any> = mapOf(
+        "lat" to l.latitude, "lon" to l.longitude, "acc" to l.accuracy.toDouble(), "time" to l.time
+    )
+
+    /** Where the phone is right now: a recent fix if there is one, otherwise one fresh reading (12 s max). */
+    @Suppress("DEPRECATION", "MissingPermission")
+    private fun getLocation(result: MethodChannel.Result) {
+        try {
+            val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+            if (Build.VERSION.SDK_INT >= 28 && !lm.isLocationEnabled) {
+                result.success(mapOf("error" to "off")); return
+            }
+            val all = mutableListOf<String>()
+            if (Build.VERSION.SDK_INT >= 31 && lm.hasProvider(LocationManager.FUSED_PROVIDER)) all.add(LocationManager.FUSED_PROVIDER)
+            all.add(LocationManager.GPS_PROVIDER); all.add(LocationManager.NETWORK_PROVIDER)
+            val providers = all.filter { p -> try { lm.isProviderEnabled(p) } catch (e: Exception) { false } }
+            var best: Location? = null
+            for (p in providers + LocationManager.PASSIVE_PROVIDER) {
+                val l = try { lm.getLastKnownLocation(p) } catch (e: Exception) { null } ?: continue
+                if (best == null || l.time > best!!.time) best = l
+            }
+            val b = best
+            if (b != null && System.currentTimeMillis() - b.time < 120_000 && b.accuracy < 150) {
+                result.success(locMap(b)); return
+            }
+            if (providers.isEmpty()) {
+                result.success(if (b != null) locMap(b) else mapOf("error" to "off")); return
+            }
+            val main = Handler(Looper.getMainLooper())
+            var done = false
+            val listeners = ArrayList<LocationListener>()
+            fun finish(l: Location?) {
+                if (done) return
+                done = true
+                for (x in listeners) try { lm.removeUpdates(x) } catch (e: Exception) {}
+                val x = l ?: best
+                result.success(if (x != null) locMap(x) else mapOf("error" to "none"))
+            }
+            main.postDelayed({ finish(null) }, 12_000)
+            // Fused (or network) answers fast; GPS can be slow indoors, so ask all and take the first
+            val ask = if (providers.contains(LocationManager.FUSED_PROVIDER)) listOf(LocationManager.FUSED_PROVIDER) else providers
+            for (p in ask) {
+                if (Build.VERSION.SDK_INT >= 30) {
+                    lm.getCurrentLocation(p, null, mainExecutor) { l -> if (l != null) finish(l) }
+                } else {
+                    val ls = object : LocationListener {
+                        override fun onLocationChanged(l: Location) = finish(l)
+                        override fun onProviderEnabled(provider: String) {}
+                        override fun onProviderDisabled(provider: String) {}
+                        @Deprecated("old API")
+                        override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
+                    }
+                    listeners.add(ls)
+                    lm.requestSingleUpdate(p, ls, Looper.getMainLooper())
+                }
+            }
+        } catch (e: Throwable) {
+            result.success(mapOf("error" to "${e.javaClass.simpleName}: ${e.message}"))
+        }
+    }
 
     private fun permMap(): Map<String, Boolean> = mapOf(
         "contacts" to has(Manifest.permission.READ_CONTACTS),
