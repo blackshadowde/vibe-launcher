@@ -2712,25 +2712,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
           });
         }
       default:
-        final info = await Native.nanoInfo();
-        final err = '${info['error'] ?? ''}';
-        final aicore = '${info['aicore'] ?? '?'}';
-        _say('The offline AI isn\'t ready on this phone yet. Your ${info['model']} supports it; Google installs it through '
-            '**Android AICore**, which needs updating first.\n\n'
-            '• Status: ${info['status']}${err.isEmpty ? '' : ' ($err)'}\n'
-            '• Android AICore: $aicore\n'
-            '• Private Compute Services: ${info['pcs']}\n\n'
-            'These two don\'t show in Play Store search, so use the buttons. After updating, restart the phone and tap Check again. '
-            'Google sometimes turns it on a day or two later.',
-            card: {
-              'type': 'ask',
-              'state': 'ask',
-              'buttons': [
-                {'label': 'Update AICore', 'do': 'upd_aicore', 'primary': true},
-                {'label': 'Update Private Compute', 'do': 'upd_pcs'},
-                {'label': 'Check again', 'do': 'nano_check'},
-              ],
-            });
+        _say('The offline AI isn\'t available on this phone right now. Update **Android AICore** and '
+            '**Private Compute Services** from the Play Store, restart the phone, then ask me again.');
     }
   }
 
@@ -2766,19 +2749,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver, Single
 
   void _onAsk(Msg m, String action) {
     // Buttons you can use again and again (call, open…) stay active; one-time choices lock
-    const repeat = {'upd_aicore', 'upd_pcs', 'nano_check', 'numcall', 'nummsg', 'numsave', 'numpad', 'tgfileopen', 'tgdownloads', 'tgopen', 'tgstart'};
+    const repeat = {'numcall', 'nummsg', 'numsave', 'numpad', 'tgfileopen', 'tgdownloads', 'tgopen', 'tgstart'};
     if (!repeat.contains(action)) _setCard(m, Map.from(m.card!)..['state'] = action);
     switch (action) {
       case 'nano_models':
         _showModels();
       case 'cancel':
         _say('Okay. Ask me "download offline model" anytime.');
-      case 'upd_aicore':
-        Native.openUrl('market://details?id=com.google.android.aicore');
-      case 'upd_pcs':
-        Native.openUrl('market://details?id=com.google.android.as.oss');
-      case 'nano_check':
-        _offlineModel();
       case 'numcall' || 'nummsg' || 'numsave' || 'numpad':
         final n = '${m.card!['number']}';
         if (action == 'numcall') {
