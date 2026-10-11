@@ -245,6 +245,14 @@ class MainActivity : FlutterActivity() {
                 "playerState" -> result.success(player?.let { playerMap(it) })
                 // ---------- Streaming apps: play by search in the background, without opening them ----------
                 "playSilently" -> playSilently(call.argument<String>("query") ?: "", call.argument<String>("package"), result)
+                // What a music app is doing right now (to tell if a background play actually started)
+                "mediaState" -> {
+                    val c = VibeNotifService.instance?.controllerFor(call.argument<String>("package") ?: "")
+                    result.success(c?.let {
+                        mapOf("state" to (it.playbackState?.state ?: 0),
+                            "title" to (it.metadata?.getString(MediaMetadata.METADATA_KEY_TITLE) ?: it.metadata?.description?.title?.toString() ?: ""))
+                    })
+                }
                 "musicApp" -> {
                     val p = musicApp()
                     result.success(p?.let { mapOf("package" to it, "label" to labelOf(it)) })
@@ -1022,6 +1030,8 @@ class MainActivity : FlutterActivity() {
             done = true
             try { result.success(v?.let { mapOf("package" to it, "label" to labelOf(it)) }) } catch (_: Throwable) {}
         }
+        // You asked for this song: its title change is a real new track, not a lyric line
+        VibeNotifService.instance?.expectNewTrack(pkg)
         val live = VibeNotifService.instance?.controllerFor(pkg)
         if (live != null) {
             try { live.transportControls.playFromSearch(q, Bundle()); finish(pkg); return } catch (_: Throwable) {}
@@ -1560,6 +1570,11 @@ class VibeNotifService : NotificationListenerService() {
     }
 
     /** play / pause / toggle / next / previous on a music app (or whichever is playing). */
+    fun expectNewTrack(pkg: String) {
+        mediaChangedAt.remove(pkg)
+        mediaKeys.remove(pkg)
+    }
+
     fun controllerFor(pkg: String): MediaController? = controllers.values.map { it.first }.firstOrNull { it.packageName == pkg }
 
     /** The app that played music most recently (or is playing now). */
