@@ -534,7 +534,9 @@ class MainActivity : FlutterActivity() {
                     var err = ""
                     if (nano == null) {
                         status = "no client"
-                        err = try { Generation.getClient(); "" } catch (e: Throwable) { e.toString() }
+                        err = try { Generation.getClient(); "" } catch (e: Throwable) {
+                            (e.toString() + " @ " + e.stackTrace.take(2).joinToString(" < ") { "${it.className.substringAfterLast('.')}.${it.methodName}" }).take(300)
+                        }
                     } else {
                         try {
                             status = when (val st = nano!!.checkStatus()) {
