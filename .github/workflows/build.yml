@@ -34,6 +34,8 @@ jobs:
           cp android_overrides/kotlin/*.kt android/app/src/main/kotlin/com/vibe/vibe_launcher/
           # App icon (Home bubble) and other Android resources
           if [ -d android_overrides/res ]; then cp -r android_overrides/res/. android/app/src/main/res/; fi
+          # Keep rules for code-shrinking (ML Kit on-phone AI needs them)
+          if [ -f android_overrides/proguard-rules.pro ]; then cp android_overrides/proguard-rules.pro android/app/proguard-rules.pro; fi
 
       # On-phone AI (Gemini Nano) needs Android 8+ and Google's ML Kit library
       - name: Add Android libraries
@@ -42,6 +44,15 @@ jobs:
           [ -f "$F" ] || F=android/app/build.gradle
           sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 26/; s/minSdkVersion flutter.minSdkVersion/minSdkVersion 26/' "$F"
           cat >> "$F" <<'GRADLE'
+
+          // Use our keep rules in release builds too (Flutter's own rules stay)
+          android {
+              buildTypes {
+                  getByName("release") {
+                      proguardFiles("proguard-rules.pro")
+                  }
+              }
+          }
 
           dependencies {
               implementation("com.google.mlkit:genai-prompt:1.0.0-beta4")
